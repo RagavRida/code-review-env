@@ -3,7 +3,7 @@ SemanticTransitionDataset — PyTorch-compatible dataset for MBRL research.
 
 Loads trajectory JSONL files exported from CodeReviewEnv episodes and
 provides (state, action, reward, next_state, done) transitions for
-training semantic world models.
+training Knowledge-Work World Models (KW-WM).
 
 Usage:
     from dataset import SemanticTransitionDataset
@@ -28,14 +28,16 @@ Usage:
 
 Research context:
     Standard MBRL benchmarks (Dreamer, MBPO, MuZero) assume vector state
-    spaces with physics-based transitions. CodeReviewEnv enables the first
-    investigation of world model learning over *semantic* state spaces where
-    T(s,a)→s' depends on textual meaning rather than differential equations.
+    spaces with physics-based transitions. Text-based world models (Li et al.,
+    2025) study synthetic text games; embodied SWMs (Berg et al., 2025) target
+    robotics. CodeReviewEnv enables training the first **Knowledge-Work World
+    Models (KW-WM)** — world models over structured professional text where
+    T(s,a)→s' depends on professional judgment rather than physics or game rules.
 
     Open questions this dataset enables:
-    1. Does prediction error compound exponentially in semantic spaces?
+    1. Does prediction error compound exponentially in knowledge-work spaces?
     2. Does structured text provide natural error correction vs. continuous?
-    3. Can a semantic world model transfer across knowledge-work domains?
+    3. Can a KW-WM transfer across knowledge-work domains?
 """
 
 import json
@@ -46,7 +48,7 @@ from typing import Any, Dict, List, Optional
 
 class SemanticTransitionDataset:
     """
-    Loads trajectory JSONL files for training a semantic world model.
+    Loads trajectory JSONL files for training a Knowledge-Work World Model.
 
     Compatible with PyTorch Dataset interface (implements __len__ and __getitem__).
     Each trajectory file is a JSONL where each line is a transition dict.

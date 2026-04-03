@@ -20,9 +20,9 @@ tags:
 
 **An OpenEnv-compliant RL environment for software code review agents.**
 
-> **CodeReviewEnv is the first RL benchmark for structured knowledge work.** Unlike MuJoCo (continuous physics), Atari (pixel grids), or TextWorld (synthetic narratives), CodeReviewEnv operates over *real-world semantic states* — code diffs, bug categories, and human-calibrated severity labels from actual software engineering practice. Its trajectory export (`export_trajectory()`) provides the first standardized dataset format for training semantic world models over structured text.
+> **CodeReviewEnv is the first RL benchmark for structured knowledge work.** Unlike MuJoCo (continuous physics), Atari (pixel grids), or TextWorld (synthetic narratives), CodeReviewEnv operates over *real-world semantic states* — code diffs, bug categories, and human-calibrated severity labels from actual software engineering practice. Its trajectory export (`export_trajectory()`) provides the first standardized dataset format for training **Knowledge-Work World Models (KW-WM)** — world models over structured professional text.
 
-Train and evaluate LLM agents on real code review tasks — severity triage, queue prioritization, and actionable feedback generation — with deterministic grading, shaped rewards, and trajectory logging for semantic world model research.
+Train and evaluate LLM agents on real code review tasks — severity triage, queue prioritization, and actionable feedback generation — with deterministic grading, shaped rewards, and trajectory logging for Knowledge-Work World Model (KW-WM) research.
 
 [![OpenEnv Spec](https://img.shields.io/badge/OpenEnv-compliant-blue)](https://github.com/openenv)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -57,6 +57,10 @@ Train and evaluate LLM agents on real code review tasks — severity triage, que
 
 Modern AI agents are increasingly deployed for knowledge work — summarizing documents, triaging issues, reviewing code — yet the RL/agent community lacks environments that faithfully model these tasks. Existing benchmarks either live in toy domains (grid worlds, text adventures) or are evaluation-only suites (SWE-bench, WebArena) with no MDP formalism, reward shaping, or trajectory export.
 
+Prior work on text-based world models (Li et al., 2025 "From Word to World") studies general text games. Prior work on semantic world models (Berg et al., 2025 "SWM") targets embodied robotics. **CodeReviewEnv is the first benchmark for world model training in structured knowledge work** — where state transitions depend on professional judgment rather than physical or game mechanics.
+
+SWE-bench and its successors explicitly acknowledge they cannot measure code maintainability or professional review quality (Da et al., 2025). CodeReviewEnv is the first environment designed to make these dimensions **learnable via MBRL**.
+
 ### Why CodeReviewEnv?
 
 Code review is one of the highest-volume, highest-impact knowledge tasks in software engineering. Every development team does it daily, and quality directly affects shipped software security, reliability, and maintainability. CodeReviewEnv fills a genuine gap:
@@ -67,20 +71,21 @@ Code review is one of the highest-volume, highest-impact knowledge tasks in soft
 | MDP formalism with R(s,a,s') | ✅ Semantic MDP with shaped rewards |
 | Multiple difficulty levels | ✅ Easy / Medium / Hard |
 | Deterministic, reproducible grading | ✅ Seed-controlled, no stochastic graders |
-| Trajectory export for MBRL | ✅ JSONL `(s, a, r, s')` per step |
+| Trajectory export for KW-WM | ✅ JSONL `(s, a, r, s')` per step |
 | Deployable as a service | ✅ Docker + HF Space + OpenEnv spec |
 
 ### Research Gap
 
-| Benchmark | State Space | Transition | World Model Support? |
-|-----------|-------------|------------|---------------------|
-| MuJoCo | ℝⁿ (joints) | Physics sim | Yes (Dreamer) |
-| Atari | Pixels | Game engine | Yes (MuZero) |
-| AgentBench | Text | N/A | No (eval only) |
-| SWE-bench | Code | N/A | No (eval only) |
-| **CodeReviewEnv** | **Semantic text** | **Semantic** | **Yes (this work)** |
+| Benchmark | State Space | Transition | World Model? | Domain |
+|-----------|-------------|------------|--------------|--------|
+| MuJoCo | ℝⁿ (joints) | Physics sim | ✅ Dreamer | Robotics |
+| Atari | Pixels | Game engine | ✅ MuZero | Games |
+| TextWorld | Synthetic text | Game rules | ⚠️ Li et al. 2025 | Text games |
+| SWM (Berg et al.) | Visual + text | Physics | ✅ Embodied | Robotics |
+| SWE-bench | Code | N/A | ❌ Eval only | SE |
+| **CodeReviewEnv** | **Structured text** | **Professional judgment** | **✅ KW-WM (this work)** | **Knowledge work** |
 
-CodeReviewEnv introduces **semantic transitions** — the state is structured text (code diffs, bug patterns, author context) and the transition depends on *understanding meaning*. This enables a new class of **semantic world models** not benchmarked elsewhere.
+CodeReviewEnv introduces **knowledge-work transitions** — the state is structured professional text (code diffs, bug patterns, author context) and the transition depends on *professional judgment*. This enables training **Knowledge-Work World Models (KW-WM)** — a new class of world models not benchmarked by prior work in games (Li et al., 2025), robotics (Berg et al., 2025), or code generation (Da et al., 2025).
 
 ---
 
@@ -534,7 +539,7 @@ code-review-env/
 
 ## Using CodeReviewEnv for MBRL Research
 
-Standard MBRL benchmarks (Dreamer, MBPO, MuZero) assume vector state spaces with physics-based transitions. No prior work addresses **semantic state spaces** where T(s,a)→s' depends on meaning rather than equations. CodeReviewEnv is the first environment designed for this setting.
+Standard MBRL benchmarks (Dreamer, MBPO, MuZero) assume vector state spaces with physics-based transitions. Text-based world models (Li et al., 2025) study synthetic text games; embodied semantic world models (Berg et al., 2025) target robotics. No prior work addresses **knowledge-work state spaces** where T(s,a)→s' depends on professional judgment rather than physics or game rules. CodeReviewEnv is the first environment designed for training **Knowledge-Work World Models (KW-WM)**.
 
 ### Step 1: Collect Trajectories
 
@@ -567,7 +572,7 @@ print(t["next_state_text"])  # "PR PR-006: Add rate limiter | ..."
 print(t["done"])             # False
 ```
 
-### Step 3: Train Semantic World Model
+### Step 3: Train Knowledge-Work World Model (KW-WM)
 
 ```python
 from sentence_transformers import SentenceTransformer
@@ -612,10 +617,11 @@ A `trajectories/sample_trajectory.jsonl` file is included with 13 transitions fr
 
 ### Open Research Questions
 
-1. **Error compounding**: Does prediction error compound exponentially in semantic spaces like in continuous spaces (Janner et al., 2019)?
-2. **Natural error correction**: Does structured text provide error correction that physics-based transitions lack, enabling longer model-based rollouts?
-3. **Cross-domain transfer**: Can a world model trained on code review transfer to email triage, bug prioritization, or document summarization?
-4. **Representation learning**: What embedding dimension is sufficient for semantic state spaces — 384 (MiniLM) vs 768 (BERT) vs 4096 (code-specific)?
+1. **Error compounding**: Does prediction error compound exponentially in knowledge-work spaces like in continuous spaces (Janner et al., 2019)?
+2. **Natural error correction**: Does structured text provide error correction that physics-based transitions lack (cf. Berg et al., 2025), enabling longer model-based rollouts?
+3. **Cross-domain transfer**: Can a KW-WM trained on code review transfer to email triage, bug prioritization, or document summarization?
+4. **Representation learning**: What embedding dimension is sufficient for knowledge-work state spaces — 384 (MiniLM) vs 768 (BERT) vs 4096 (code-specific)?
+5. **Learnability of review quality**: Can KW-WM learn the dimensions that SWE-bench cannot measure — code maintainability and professional review quality (Da et al., 2025)?
 
 ---
 
@@ -623,10 +629,10 @@ A `trajectories/sample_trajectory.jsonl` file is included with 13 transitions fr
 
 ```bibtex
 @misc{codereviewenv2026,
-  title={CodeReviewEnv: A Semantic MDP Benchmark for Model-Based Reinforcement Learning over Knowledge Work},
+  title={CodeReviewEnv: A Knowledge-Work World Model Benchmark for Model-Based Reinforcement Learning},
   author={Raghav Rida},
   year={2026},
-  note={OpenEnv Hackathon Submission — First RL benchmark for semantic state spaces},
+  note={OpenEnv Hackathon — First RL benchmark for knowledge-work world models (KW-WM)},
   url={https://huggingface.co/spaces/ragavrida/code-review-env}
 }
 ```
