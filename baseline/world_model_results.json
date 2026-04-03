@@ -1,15 +1,46 @@
 {
-  "baseline_mse": 0.024648124045875474,
-  "model_mse": 0.04735487617643219,
-  "improvement_pct": -92.12365244630608,
-  "per_task": {
-    "easy": 0.05198951719712587,
-    "medium": 0.04383123978573278,
-    "hard": 0.045900435207802626
+  "state_prediction": {
+    "copy_baseline_mse": 0.024357,
+    "random_baseline_mse": 0.039032,
+    "model_mse": 0.036672,
+    "vs_random_pct": 6.0,
+    "vs_copy_pct": -50.6,
+    "per_task": {
+      "easy": 0.03767,
+      "medium": 0.036724,
+      "hard": 0.03585
+    }
   },
-  "architecture": "MLP(73->64->55)",
-  "epochs": 100,
-  "train_samples": 272,
-  "test_samples": 68,
-  "total_transitions": 340
+  "reward_prediction": {
+    "mean_pred_baseline_mse": 0.103907,
+    "random_baseline_mse": 0.22453,
+    "model_mse": 0.063629,
+    "vs_mean_pred_pct": 38.8,
+    "vs_random_pct": 71.7,
+    "direction_accuracy": 0.753,
+    "per_task": {
+      "easy": 0.115629,
+      "medium": 0.044865,
+      "hard": 0.030399
+    }
+  },
+  "done_prediction": {
+    "accuracy": 0.699
+  },
+  "data": {
+    "total_transitions": 727,
+    "train_samples": 581,
+    "test_samples": 146,
+    "per_task": {
+      "easy": 250,
+      "medium": 150,
+      "hard": 327
+    }
+  },
+  "architecture": {
+    "state_model": "MLP(73\u2192128\u219255)",
+    "reward_model": "MLP(73\u219264\u21921)"
+  },
+  "epochs": 200,
+  "training_time_seconds": 182.9
 }
