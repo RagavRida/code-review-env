@@ -5,6 +5,7 @@ colorFrom: blue
 colorTo: indigo
 sdk: docker
 pinned: false
+short_description: "First RL benchmark for semantic MBRL over code review"
 tags:
   - openenv
   - reinforcement-learning
@@ -12,6 +13,7 @@ tags:
   - mbrl
   - knowledge-work
   - llm-agents
+  - semantic-world-model
 ---
 
 # 🔍 CodeReviewEnv
@@ -487,7 +489,11 @@ code-review-env/
 ├── validate.py                 # OpenEnv spec compliance validator
 ├── models.py                   # OpenEnv Action/Observation/State subclasses
 ├── client.py                   # CodeReviewEnv(EnvClient) — async/sync client
+├── dataset.py                  # SemanticTransitionDataset (PyTorch-compatible)
 ├── __init__.py                 # Package exports
+│
+├── trajectories/               # MBRL trajectory data (JSONL)
+│   └── sample_trajectory.jsonl # 13 sample transitions from all 3 tasks
 │
 ├── env/                        # Core environment logic
 │   ├── base.py                 # CodeReviewEnv main class (S-MDP)
@@ -526,29 +532,90 @@ code-review-env/
 
 ---
 
-## Trajectory Dataset
+## Using CodeReviewEnv for MBRL Research
 
-Each episode exports clean, structured trajectories for world model training:
+Standard MBRL benchmarks (Dreamer, MBPO, MuZero) assume vector state spaces with physics-based transitions. No prior work addresses **semantic state spaces** where T(s,a)→s' depends on meaning rather than equations. CodeReviewEnv is the first environment designed for this setting.
 
-```python
-# Export from the environment
-trajectory = env.export_trajectory()
+### Step 1: Collect Trajectories
 
-# Each transition contains:
-# {
-#   "step": 0,
-#   "state": { ... observation dict ... },
-#   "action": { "action_type": "label_severity", "severity": "high" },
-#   "reward": 0.6,
-#   "next_state": { ... next observation dict ... },
-#   "done": false,
-#   "timestamp": "...",
-#   "episode_id": "...",
-#   "task": "easy"
-# }
+```bash
+# Run inference to generate trajectory data
+python inference.py  # generates trajectories/*.jsonl
+
+# Or collect from the server API
+curl "https://ragavrida-code-review-env.hf.space/export_trajectory?session_id=latest"
 ```
 
-**MBRL Research Application:** Encode states with sentence-transformers, train a transition model `f(z_t, a_t) → (z_{t+1}, r_t)`, then plan without the real environment — Dyna-Q over language state space. See `world_model/scaffold.py` for infrastructure.
+### Step 2: Load Dataset
+
+```python
+from dataset import SemanticTransitionDataset
+
+ds = SemanticTransitionDataset("trajectories/")
+print(f"{len(ds)} transitions collected")
+print(ds.stats())
+
+# Filter by task difficulty
+hard_ds = SemanticTransitionDataset("trajectories/", task_filter="hard")
+
+# Each transition:
+t = ds[0]
+print(t["state_text"])       # "PR PR-020: Refactor StringUtils | ..."
+print(t["action_text"])      # "label_severity:high"
+print(t["reward"])           # 0.5
+print(t["next_state_text"])  # "PR PR-006: Add rate limiter | ..."
+print(t["done"])             # False
+```
+
+### Step 3: Train Semantic World Model
+
+```python
+from sentence_transformers import SentenceTransformer
+import torch
+
+encoder = SentenceTransformer("all-MiniLM-L6-v2")
+
+# Encode states
+states = [ds[i]["state_text"] for i in range(len(ds))]
+actions = [ds[i]["action_text"] for i in range(len(ds))]
+s_enc = encoder.encode(states)    # (N, 384) embeddings
+a_enc = encoder.encode(actions)   # (N, 384) embeddings
+
+# Train MLP transition head: (s_enc, a_enc) → (s'_enc, r)
+# Then use Dyna-Q for sample-efficient planning
+# See world_model/scaffold.py for infrastructure
+```
+
+### Step 4: PyTorch DataLoader
+
+```python
+# Direct PyTorch integration
+torch_ds = ds.to_pytorch()
+from torch.utils.data import DataLoader
+loader = DataLoader(torch_ds, batch_size=32, shuffle=True)
+
+for batch in loader:
+    s_text = batch["state_text"]       # list of state strings
+    a_text = batch["action_text"]      # list of action strings
+    rewards = batch["reward"]          # (B,) tensor
+    done = batch["done"]              # (B,) tensor
+    break
+```
+
+### Sample Trajectory
+
+A `trajectories/sample_trajectory.jsonl` file is included with 13 transitions from all 3 tasks (seed=42). Each line:
+
+```json
+{"episode_id": "sample_easy_seed42", "task": "easy", "step": 0, "state": {"pr_id": "PR-020", "title": "Refactor StringUtils"}, "action_text": "label_severity:high", "reward": 0.0, "done": false}
+```
+
+### Open Research Questions
+
+1. **Error compounding**: Does prediction error compound exponentially in semantic spaces like in continuous spaces (Janner et al., 2019)?
+2. **Natural error correction**: Does structured text provide error correction that physics-based transitions lack, enabling longer model-based rollouts?
+3. **Cross-domain transfer**: Can a world model trained on code review transfer to email triage, bug prioritization, or document summarization?
+4. **Representation learning**: What embedding dimension is sufficient for semantic state spaces — 384 (MiniLM) vs 768 (BERT) vs 4096 (code-specific)?
 
 ---
 
@@ -556,10 +623,11 @@ trajectory = env.export_trajectory()
 
 ```bibtex
 @misc{codereviewenv2026,
-  title={CodeReviewEnv: A Semantic RL Benchmark for Knowledge-Work Agents},
+  title={CodeReviewEnv: A Semantic MDP Benchmark for Model-Based Reinforcement Learning over Knowledge Work},
   author={Raghav Rida},
   year={2026},
-  note={OpenEnv Hackathon Submission}
+  note={OpenEnv Hackathon Submission — First RL benchmark for semantic state spaces},
+  url={https://huggingface.co/spaces/ragavrida/code-review-env}
 }
 ```
 
