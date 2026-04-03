@@ -1,0 +1,15 @@
+{
+  "baseline_mse": 0.024648124045875474,
+  "model_mse": 0.04735487617643219,
+  "improvement_pct": -92.12365244630608,
+  "per_task": {
+    "easy": 0.05198951719712587,
+    "medium": 0.04383123978573278,
+    "hard": 0.045900435207802626
+  },
+  "architecture": "MLP(73->64->55)",
+  "epochs": 100,
+  "train_samples": 272,
+  "test_samples": 68,
+  "total_transitions": 340
+}

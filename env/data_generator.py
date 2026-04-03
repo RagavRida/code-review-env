@@ -2,7 +2,7 @@
 Data Generator for CodeReviewEnv
 
 Generates realistic synthetic pull requests with actual code diffs.
-The FIXED_TEST_SUITE provides 20 pre-generated PRs at seed=42 for
+The FIXED_TEST_SUITE provides 50 pre-generated PRs at seed=42 for
 deterministic evaluation — all episodes draw from this fixed suite.
 
 Bug categories and ground truth severity mapping:
@@ -956,6 +956,863 @@ PR_TEMPLATES: List[Dict] = [
         "human_labels": ["none", "none", "none"],
         "human_agreement": 1.0,
         "cohen_kappa": 1.0,
+    },
+    # ── 21. Rust unsafe memory ─────────────────────────────────────────
+    {
+        "pr_id": "PR-021",
+        "title": "Add FFI bindings for crypto library",
+        "description": "Created Rust FFI wrappers for the C crypto library. Handles key generation and signing.",
+        "author_experience": "mid",
+        "language": "rust",
+        "filename": "src/ffi/crypto.rs",
+        "diff": '''@@ -1,0 +1,18 @@
++use std::ffi::{CStr, CString};
++use std::os::raw::c_char;
++
++pub fn sign_message(key: *const c_char, msg: &str) -> String {
++    // BUG: Dereferencing raw pointer without null check
++    let key_str = unsafe { CStr::from_ptr(key) }.to_str().unwrap();
++    let c_msg = CString::new(msg).unwrap();
++    // BUG: Result of FFI call not checked for errors
++    let sig = unsafe { ffi_sign(key_str.as_ptr(), c_msg.as_ptr()) };
++    unsafe { CStr::from_ptr(sig) }.to_string_lossy().into_owned()
++}''',
+        "lines_changed": 11,
+        "has_tests": False,
+        "bug_category": "null_pointer",
+        "ground_truth_severity": "high",
+        "bug_lines": [5, 8],
+        "human_labels": ["high", "critical", "high"],
+        "human_agreement": 0.67,
+        "cohen_kappa": 0.58,
+    },
+    # ── 22. Go SQL injection ─────────────────────────────────────────────
+    {
+        "pr_id": "PR-022",
+        "title": "Add search endpoint for products",
+        "description": "New product search API with filtering by category and price range.",
+        "author_experience": "junior",
+        "language": "go",
+        "filename": "handlers/search.go",
+        "diff": '''@@ -1,0 +1,16 @@
++func SearchProducts(w http.ResponseWriter, r *http.Request) {
++    query := r.URL.Query().Get("q")
++    category := r.URL.Query().Get("category")
++    // BUG: Direct string interpolation in SQL — SQL injection
++    sql := fmt.Sprintf("SELECT * FROM products WHERE name LIKE '%%%s%%' AND category = '%s'", query, category)
++    rows, err := db.Query(sql)
++    if err != nil {
++        http.Error(w, "Search failed", 500)
++        return
++    }
++    defer rows.Close()
++    json.NewEncoder(w).Encode(scanProducts(rows))
++}''',
+        "lines_changed": 13,
+        "has_tests": False,
+        "bug_category": "sql_injection",
+        "ground_truth_severity": "critical",
+        "bug_lines": [4, 5],
+        "human_labels": ["critical", "critical", "critical"],
+        "human_agreement": 1.0,
+        "cohen_kappa": 1.0,
+    },
+    # ── 23. TypeScript race condition ─────────────────────────────────────
+    {
+        "pr_id": "PR-023",
+        "title": "Add real-time inventory tracker",
+        "description": "Tracks product inventory in real-time with WebSocket updates.",
+        "author_experience": "mid",
+        "language": "typescript",
+        "filename": "src/inventory/tracker.ts",
+        "diff": '''@@ -1,0 +1,20 @@
++let inventory: Map<string, number> = new Map();
++
++export async function reserveItem(productId: string, qty: number): Promise<boolean> {
++    const current = inventory.get(productId) || 0;
++    // BUG: TOCTOU race — another request could modify between check and update
++    if (current >= qty) {
++        // Simulate async DB write
++        await db.updateInventory(productId, current - qty);
++        inventory.set(productId, current - qty);
++        return true;
++    }
++    return false;
++}
++
++export async function restockItem(productId: string, qty: number) {
++    const current = inventory.get(productId) || 0;
++    // BUG: Same race condition on restock
++    inventory.set(productId, current + qty);
++    await db.updateInventory(productId, current + qty);
++}''',
+        "lines_changed": 20,
+        "has_tests": False,
+        "bug_category": "race_condition",
+        "ground_truth_severity": "high",
+        "bug_lines": [5, 17],
+        "human_labels": ["high", "high", "critical"],
+        "human_agreement": 0.67,
+        "cohen_kappa": 0.65,
+    },
+    # ── 24. Python logic error ─────────────────────────────────────────
+    {
+        "pr_id": "PR-024",
+        "title": "Implement discount calculation engine",
+        "description": "Multi-tier discount system supporting percentage, fixed, and BOGO promotions.",
+        "author_experience": "junior",
+        "language": "python",
+        "filename": "pricing/discounts.py",
+        "diff": '''@@ -1,0 +1,22 @@
++def calculate_discount(cart_items, promotions):
++    total_discount = 0
++    for item in cart_items:
++        for promo in promotions:
++            if promo["type"] == "percentage":
++                # BUG: Off-by-one — divides by 10 not 100
++                total_discount += item["price"] * promo["value"] / 10
++            elif promo["type"] == "fixed":
++                total_discount += promo["value"]
++            elif promo["type"] == "bogo":
++                # BUG: Applies BOGO to every item, not just qualifying ones
++                total_discount += item["price"]
++    # BUG: No cap — discount can exceed cart total
++    return total_discount''',
+        "lines_changed": 14,
+        "has_tests": False,
+        "bug_category": "logic_error",
+        "ground_truth_severity": "medium",
+        "bug_lines": [6, 11, 13],
+        "human_labels": ["medium", "high", "medium"],
+        "human_agreement": 0.67,
+        "cohen_kappa": 0.55,
+    },
+    # ── 25. Java performance ─────────────────────────────────────────────
+    {
+        "pr_id": "PR-025",
+        "title": "Generate monthly analytics report",
+        "description": "Aggregates transaction data for monthly PDF reports with charts.",
+        "author_experience": "mid",
+        "language": "java",
+        "filename": "src/main/java/com/app/ReportGenerator.java",
+        "diff": '''@@ -20,0 +20,18 @@
++    public Report generateMonthlyReport(int month, int year) {
++        List<Transaction> all = transactionRepo.findAll();
++        // BUG: Loading ALL transactions then filtering in memory — N+1
++        List<Transaction> monthly = new ArrayList<>();
++        for (Transaction t : all) {
++            if (t.getMonth() == month && t.getYear() == year) {
++                monthly.add(t);
++            }
++        }
++        // BUG: Sorting entire list for each category instead of groupBy
++        for (String category : getCategories()) {
++            List<Transaction> catTxns = monthly.stream()
++                .filter(t -> t.getCategory().equals(category))
++                .sorted(Comparator.comparing(Transaction::getAmount))
++                .collect(Collectors.toList());
++            report.addSection(category, aggregate(catTxns));
++        }
++        return report;
++    }''',
+        "lines_changed": 18,
+        "has_tests": True,
+        "bug_category": "performance_issue",
+        "ground_truth_severity": "low",
+        "bug_lines": [2, 10],
+        "human_labels": ["low", "low", "medium"],
+        "human_agreement": 0.67,
+        "cohen_kappa": 0.60,
+    },
+    # ── 26. Python security ─────────────────────────────────────────────
+    {
+        "pr_id": "PR-026",
+        "title": "Add JWT authentication middleware",
+        "description": "JWT-based auth middleware for Flask. Validates tokens and extracts user claims.",
+        "author_experience": "junior",
+        "language": "python",
+        "filename": "middleware/auth.py",
+        "diff": '''@@ -1,0 +1,20 @@
++import jwt
++from functools import wraps
++from flask import request, jsonify
++
++SECRET_KEY = "my-super-secret-key-12345"  # BUG: Hardcoded secret
++
++def require_auth(f):
++    @wraps(f)
++    def decorated(*args, **kwargs):
++        token = request.headers.get("Authorization", "").replace("Bearer ", "")
++        try:
++            # BUG: algorithm not restricted — allows "none" algorithm attack
++            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256", "none"])
++            request.user = payload
++        except jwt.ExpiredSignatureError:
++            return jsonify({"error": "Token expired"}), 401
++        except:  # BUG: Bare except hides real errors
++            return jsonify({"error": "Invalid token"}), 401
++        return f(*args, **kwargs)
++    return decorated''',
+        "lines_changed": 20,
+        "has_tests": False,
+        "bug_category": "security_vulnerability",
+        "ground_truth_severity": "critical",
+        "bug_lines": [5, 12, 17],
+        "human_labels": ["critical", "critical", "critical"],
+        "human_agreement": 1.0,
+        "cohen_kappa": 1.0,
+    },
+    # ── 27. Go missing error handling ─────────────────────────────────
+    {
+        "pr_id": "PR-027",
+        "title": "Add file upload handler",
+        "description": "Handles multipart file uploads with size validation and storage.",
+        "author_experience": "junior",
+        "language": "go",
+        "filename": "handlers/upload.go",
+        "diff": '''@@ -1,0 +1,18 @@
++func UploadFile(w http.ResponseWriter, r *http.Request) {
++    // BUG: No max file size limit — DoS via large upload
++    file, header, _ := r.FormFile("upload")
++    defer file.Close()
++
++    // BUG: Ignoring error from FormFile
++    dst, _ := os.Create(filepath.Join("/uploads", header.Filename))
++    // BUG: Path traversal — filename could contain ../
++    defer dst.Close()
++
++    io.Copy(dst, file)
++    // BUG: io.Copy error not checked
++    w.WriteHeader(http.StatusOK)
++    fmt.Fprintf(w, "Uploaded: %s", header.Filename)
++}''',
+        "lines_changed": 15,
+        "has_tests": False,
+        "bug_category": "missing_error_handling",
+        "ground_truth_severity": "medium",
+        "bug_lines": [2, 3, 7, 11],
+        "human_labels": ["high", "medium", "medium"],
+        "human_agreement": 0.67,
+        "cohen_kappa": 0.55,
+    },
+    # ── 28. Ruby style only ──────────────────────────────────────────────
+    {
+        "pr_id": "PR-028",
+        "title": "Refactor User model validations",
+        "description": "Cleaned up user validations to use Rails built-in validators.",
+        "author_experience": "senior",
+        "language": "ruby",
+        "filename": "app/models/user.rb",
+        "diff": '''@@ -1,15 +1,15 @@
+ class User < ApplicationRecord
+-  validate :check_email
+-  validate :check_name
++  validates :email, presence: true, format: { with: URI::MailTo::EMAIL_REGEXP }
++  validates :name, presence: true, length: { minimum: 2, maximum: 100 }
++  validates :role, inclusion: { in: %w[admin editor viewer] }
+
+-  def check_email
+-    errors.add(:email, "invalid") unless email =~ /\A[\w+\-.]+@[a-z\d\-]+\.[a-z]+\z/i
+-  end
+-
+-  def check_name
+-    errors.add(:name, "too short") if name.length < 2
+-  end
++  before_save :normalize_email
++
++  private
++
++  def normalize_email
++    self.email = email.downcase.strip
++  end
+ end''',
+        "lines_changed": 15,
+        "has_tests": True,
+        "bug_category": "style_only",
+        "ground_truth_severity": "none",
+        "bug_lines": [],
+        "human_labels": ["none", "none", "none"],
+        "human_agreement": 1.0,
+        "cohen_kappa": 1.0,
+    },
+    # ── 29. Python race condition ─────────────────────────────────────────
+    {
+        "pr_id": "PR-029",
+        "title": "Add distributed task queue processor",
+        "description": "Background task processor using Redis for job coordination.",
+        "author_experience": "mid",
+        "language": "python",
+        "filename": "workers/task_processor.py",
+        "diff": '''@@ -1,0 +1,22 @@
++import redis
++import json
++
++class TaskProcessor:
++    def __init__(self):
++        self.redis = redis.Redis()
++        self.processing = {}
++
++    def claim_task(self, queue_name):
++        task_data = self.redis.lpop(queue_name)
++        if task_data:
++            task = json.loads(task_data)
++            # BUG: No atomic claim — two workers can pop same task
++            self.processing[task["id"]] = task
++            return task
++        return None
++
++    def complete_task(self, task_id):
++        # BUG: No check if task is still ours (could have been reclaimed)
++        task = self.processing.pop(task_id, None)
++        self.redis.hset("completed", task_id, json.dumps(task))
++        # BUG: task could be None here''',
+        "lines_changed": 22,
+        "has_tests": False,
+        "bug_category": "race_condition",
+        "ground_truth_severity": "high",
+        "bug_lines": [12, 19, 22],
+        "human_labels": ["high", "high", "high"],
+        "human_agreement": 1.0,
+        "cohen_kappa": 1.0,
+    },
+    # ── 30. TypeScript null pointer ────────────────────────────────────
+    {
+        "pr_id": "PR-030",
+        "title": "Add user preferences API",
+        "description": "CRUD endpoints for user preferences with nested settings.",
+        "author_experience": "junior",
+        "language": "typescript",
+        "filename": "src/api/preferences.ts",
+        "diff": '''@@ -1,0 +1,18 @@
++interface UserPrefs { theme: string; notifications: { email: boolean; push: boolean } }
++
++export function getNotifSetting(prefs: UserPrefs | null, key: string): boolean {
++    // BUG: No null check on prefs
++    return prefs.notifications[key];
++}
++
++export function updatePrefs(userId: string, updates: Partial<UserPrefs>) {
++    const current = db.getPrefs(userId);
++    // BUG: current could be undefined for new users
++    const merged = { ...current, ...updates };
++    // BUG: Deep merge needed for nested notifications object
++    db.savePrefs(userId, merged);
++}''',
+        "lines_changed": 14,
+        "has_tests": False,
+        "bug_category": "null_pointer",
+        "ground_truth_severity": "high",
+        "bug_lines": [4, 10, 12],
+        "human_labels": ["high", "medium", "high"],
+        "human_agreement": 0.67,
+        "cohen_kappa": 0.60,
+    },
+    # ── 31. Go performance ─────────────────────────────────────────────
+    {
+        "pr_id": "PR-031",
+        "title": "Add log aggregation pipeline",
+        "description": "Aggregates application logs from multiple sources for analysis.",
+        "author_experience": "mid",
+        "language": "go",
+        "filename": "pipeline/aggregator.go",
+        "diff": '''@@ -1,0 +1,18 @@
++func AggregateLogs(sources []LogSource, window time.Duration) []AggregatedLog {
++    var results []AggregatedLog
++    for _, source := range sources {
++        // BUG: Loading all logs into memory — no streaming
++        logs := source.FetchAll()
++        for _, log := range logs {
++            // BUG: O(n^2) — searching results linearly for each log
++            for i, r := range results {
++                if r.Key == log.Key {
++                    results[i].Count++
++                    break
++                }
++            }
++        }
++    }
++    // BUG: No deduplication across sources
++    return results
++}''',
+        "lines_changed": 18,
+        "has_tests": True,
+        "bug_category": "performance_issue",
+        "ground_truth_severity": "low",
+        "bug_lines": [4, 7, 16],
+        "human_labels": ["low", "low", "low"],
+        "human_agreement": 1.0,
+        "cohen_kappa": 1.0,
+    },
+    # ── 32. Java SQL injection ─────────────────────────────────────────
+    {
+        "pr_id": "PR-032",
+        "title": "Add audit log search",
+        "description": "Admin audit log search with date range and action type filters.",
+        "author_experience": "junior",
+        "language": "java",
+        "filename": "src/main/java/com/app/AuditSearch.java",
+        "diff": '''@@ -1,0 +1,14 @@
++public List<AuditLog> searchAuditLogs(String userId, String action, String dateRange) {
++    // BUG: SQL injection via string concatenation
++    String query = "SELECT * FROM audit_logs WHERE user_id = '" + userId + "'";
++    if (action != null) {
++        query += " AND action = '" + action + "'";
++    }
++    if (dateRange != null) {
++        query += " AND created_at > '" + dateRange + "'";
++    }
++    // BUG: Using raw Statement instead of PreparedStatement
++    Statement stmt = connection.createStatement();
++    ResultSet rs = stmt.executeQuery(query);
++    return mapResults(rs);
++}''',
+        "lines_changed": 14,
+        "has_tests": False,
+        "bug_category": "sql_injection",
+        "ground_truth_severity": "critical",
+        "bug_lines": [2, 3, 5, 8, 10],
+        "human_labels": ["critical", "critical", "critical"],
+        "human_agreement": 1.0,
+        "cohen_kappa": 1.0,
+    },
+    # ── 33. Python logic error ─────────────────────────────────────────
+    {
+        "pr_id": "PR-033",
+        "title": "Implement A/B test bucketing",
+        "description": "Assigns users to experiment variants based on hash bucketing.",
+        "author_experience": "mid",
+        "language": "python",
+        "filename": "experiments/bucketing.py",
+        "diff": '''@@ -1,0 +1,18 @@
++import hashlib
++
++def assign_variant(user_id, experiment_name, variants, traffic_pct=100):
++    hash_input = f"{user_id}:{experiment_name}"
++    hash_val = int(hashlib.md5(hash_input.encode()).hexdigest(), 16)
++    # BUG: Modulo 100 but traffic_pct could be 0 → ZeroDivisionError
++    bucket = hash_val % traffic_pct
++    # BUG: Off-by-one — if traffic_pct=50 and bucket=50, user is excluded
++    if bucket >= traffic_pct:
++        return None
++    variant_idx = bucket % len(variants)
++    return variants[variant_idx]''',
+        "lines_changed": 12,
+        "has_tests": True,
+        "bug_category": "logic_error",
+        "ground_truth_severity": "medium",
+        "bug_lines": [6, 8],
+        "human_labels": ["medium", "medium", "high"],
+        "human_agreement": 0.67,
+        "cohen_kappa": 0.60,
+    },
+    # ── 34. Rust missing error handling ────────────────────────────────
+    {
+        "pr_id": "PR-034",
+        "title": "Add config file parser",
+        "description": "Parses YAML configuration files with environment variable substitution.",
+        "author_experience": "junior",
+        "language": "rust",
+        "filename": "src/config/parser.rs",
+        "diff": '''@@ -1,0 +1,16 @@
++use std::fs;
++use std::env;
++
++pub fn load_config(path: &str) -> Config {
++    // BUG: unwrap on file read — panics if file missing
++    let content = fs::read_to_string(path).unwrap();
++    // BUG: unwrap on YAML parse — panics on malformed config
++    let mut config: Config = serde_yaml::from_str(&content).unwrap();
++    // Substitute env vars
++    for (key, val) in &mut config.values {
++        if val.starts_with("${") && val.ends_with("}") {
++            let env_key = &val[2..val.len()-1];
++            // BUG: unwrap on env var — panics if not set
++            *val = env::var(env_key).unwrap();
++        }
++    }
++    config
++}''',
+        "lines_changed": 16,
+        "has_tests": False,
+        "bug_category": "missing_error_handling",
+        "ground_truth_severity": "medium",
+        "bug_lines": [5, 7, 13],
+        "human_labels": ["medium", "medium", "medium"],
+        "human_agreement": 1.0,
+        "cohen_kappa": 1.0,
+    },
+    # ── 35. JavaScript security ─────────────────────────────────────────
+    {
+        "pr_id": "PR-035",
+        "title": "Add user profile image upload",
+        "description": "Profile image upload with client-side preview and server storage.",
+        "author_experience": "junior",
+        "language": "javascript",
+        "filename": "routes/profile.js",
+        "diff": '''@@ -1,0 +1,16 @@
++const express = require('express');
++const fs = require('fs');
++const path = require('path');
++
++app.post('/profile/image', (req, res) => {
++    const file = req.files.avatar;
++    // BUG: No file type validation — could upload .exe, .php
++    // BUG: Path traversal — filename could contain ../
++    const savePath = path.join('/uploads/avatars', file.name);
++    file.mv(savePath, (err) => {
++        if (err) return res.status(500).send(err);
++        // BUG: Storing full server path in DB — info disclosure
++        db.updateUser(req.user.id, { avatar: savePath });
++        res.json({ url: savePath });
++    });
++});''',
+        "lines_changed": 16,
+        "has_tests": False,
+        "bug_category": "security_vulnerability",
+        "ground_truth_severity": "critical",
+        "bug_lines": [7, 8, 12],
+        "human_labels": ["critical", "critical", "high"],
+        "human_agreement": 0.67,
+        "cohen_kappa": 0.72,
+    },
+    # ── 36-50: Additional templates for diversity ────────────────────────
+    {
+        "pr_id": "PR-036", "title": "Add CSV export for reports",
+        "description": "Export filtered report data to CSV with proper escaping.",
+        "author_experience": "mid", "language": "python", "filename": "reports/export.py",
+        "diff": '''@@ -1,0 +1,12 @@
++import csv, io
++def export_csv(data, columns):
++    output = io.StringIO()
++    writer = csv.writer(output)
++    writer.writerow(columns)
++    for row in data:
++        # BUG: No escaping — formula injection via =cmd() in cells
++        writer.writerow([row.get(c, "") for c in columns])
++    return output.getvalue()''',
+        "lines_changed": 9, "has_tests": True,
+        "bug_category": "security_vulnerability", "ground_truth_severity": "critical",
+        "bug_lines": [7], "human_labels": ["critical", "high", "critical"],
+        "human_agreement": 0.67, "cohen_kappa": 0.58,
+    },
+    {
+        "pr_id": "PR-037", "title": "Fix pagination in user list",
+        "description": "Added offset-based pagination to the user listing endpoint.",
+        "author_experience": "junior", "language": "python", "filename": "api/users.py",
+        "diff": '''@@ -10,6 +10,12 @@
++def list_users(page=1, per_page=20):
++    # BUG: No validation — negative page causes SQL error
++    offset = (page - 1) * per_page
++    # BUG: No upper bound on per_page — DoS via per_page=999999
++    users = db.query(f"SELECT * FROM users LIMIT {per_page} OFFSET {offset}")
++    return users''',
+        "lines_changed": 6, "has_tests": False,
+        "bug_category": "logic_error", "ground_truth_severity": "medium",
+        "bug_lines": [2, 4], "human_labels": ["medium", "medium", "low"],
+        "human_agreement": 0.67, "cohen_kappa": 0.55,
+    },
+    {
+        "pr_id": "PR-038", "title": "Optimize image thumbnail generation",
+        "description": "Batch thumbnail generation with parallel processing.",
+        "author_experience": "senior", "language": "python", "filename": "media/thumbnails.py",
+        "diff": '''@@ -5,8 +5,14 @@
++from concurrent.futures import ThreadPoolExecutor
++def generate_thumbnails(image_paths, sizes=[128, 256, 512]):
++    results = []
++    # BUG: No limit on thread pool — could exhaust system resources
++    with ThreadPoolExecutor() as pool:
++        for path in image_paths:
++            for size in sizes:
++                # BUG: No error handling — one failure kills entire batch
++                results.append(pool.submit(resize_image, path, size))
++    return [r.result() for r in results]''',
+        "lines_changed": 10, "has_tests": True,
+        "bug_category": "performance_issue", "ground_truth_severity": "low",
+        "bug_lines": [4, 8], "human_labels": ["low", "medium", "low"],
+        "human_agreement": 0.67, "cohen_kappa": 0.60,
+    },
+    {
+        "pr_id": "PR-039", "title": "Refactor database connection pool",
+        "description": "Replaced manual connection management with connection pooling.",
+        "author_experience": "senior", "language": "java", "filename": "src/main/java/com/app/DbPool.java",
+        "diff": '''@@ -1,18 +1,18 @@
+-public class DbManager {
+-    private Connection conn;
+-    public Connection getConnection() {
+-        if (conn == null) conn = DriverManager.getConnection(url);
+-        return conn;
+-    }
++public class DbPool {
++    private final HikariDataSource ds;
++    public DbPool(String url, int maxSize) {
++        HikariConfig config = new HikariConfig();
++        config.setJdbcUrl(url);
++        config.setMaximumPoolSize(maxSize);
++        ds = new HikariDataSource(config);
++    }
++    public Connection getConnection() throws SQLException {
++        return ds.getConnection();
++    }
+ }''',
+        "lines_changed": 18, "has_tests": True,
+        "bug_category": "style_only", "ground_truth_severity": "none",
+        "bug_lines": [], "human_labels": ["none", "none", "none"],
+        "human_agreement": 1.0, "cohen_kappa": 1.0,
+    },
+    {
+        "pr_id": "PR-040", "title": "Add email notification service",
+        "description": "Sends transactional emails via SMTP with HTML templates.",
+        "author_experience": "mid", "language": "python", "filename": "services/email.py",
+        "diff": '''@@ -1,0 +1,14 @@
++import smtplib
++from email.mime.text import MIMEText
++class EmailService:
++    def __init__(self):
++        # BUG: Hardcoded SMTP credentials
++        self.server = smtplib.SMTP("smtp.gmail.com", 587)
++        self.server.login("app@company.com", "password123")
++    def send(self, to, subject, html_body):
++        msg = MIMEText(html_body, "html")
++        msg["Subject"] = subject
++        # BUG: No input validation on 'to' — could be used for spam
++        self.server.sendmail("app@company.com", to, msg.as_string())''',
+        "lines_changed": 12, "has_tests": False,
+        "bug_category": "security_vulnerability", "ground_truth_severity": "critical",
+        "bug_lines": [5, 7, 11], "human_labels": ["critical", "critical", "critical"],
+        "human_agreement": 1.0, "cohen_kappa": 1.0,
+    },
+    {
+        "pr_id": "PR-041", "title": "Add caching layer for API responses",
+        "description": "Redis-based response cache with TTL and invalidation.",
+        "author_experience": "mid", "language": "python", "filename": "cache/api_cache.py",
+        "diff": '''@@ -1,0 +1,14 @@
++import redis, json, hashlib
++cache = redis.Redis()
++def cached_response(func):
++    def wrapper(*args, **kwargs):
++        key = hashlib.md5(str(args).encode()).hexdigest()
++        cached = cache.get(key)
++        if cached:
++            return json.loads(cached)
++        result = func(*args, **kwargs)
++        # BUG: No TTL — cached data never expires
++        cache.set(key, json.dumps(result))
++        return result
++    return wrapper''',
+        "lines_changed": 13, "has_tests": False,
+        "bug_category": "logic_error", "ground_truth_severity": "medium",
+        "bug_lines": [10], "human_labels": ["medium", "low", "medium"],
+        "human_agreement": 0.67, "cohen_kappa": 0.55,
+    },
+    {
+        "pr_id": "PR-042", "title": "Add webhook retry mechanism",
+        "description": "Retries failed webhook deliveries with exponential backoff.",
+        "author_experience": "junior", "language": "python", "filename": "webhooks/retry.py",
+        "diff": '''@@ -1,0 +1,16 @@
++import requests, time
++def deliver_webhook(url, payload, max_retries=3):
++    for attempt in range(max_retries):
++        try:
++            resp = requests.post(url, json=payload, timeout=5)
++            if resp.status_code < 400:
++                return True
++        except requests.Timeout:
++            pass
++        # BUG: Fixed delay instead of exponential backoff
++        time.sleep(1)
++    # BUG: No dead letter queue for failed deliveries
++    return False''',
+        "lines_changed": 13, "has_tests": False,
+        "bug_category": "missing_error_handling", "ground_truth_severity": "medium",
+        "bug_lines": [10, 12], "human_labels": ["medium", "medium", "low"],
+        "human_agreement": 0.67, "cohen_kappa": 0.55,
+    },
+    {
+        "pr_id": "PR-043", "title": "Add session management",
+        "description": "Server-side session store with cookie-based session IDs.",
+        "author_experience": "junior", "language": "javascript", "filename": "middleware/session.js",
+        "diff": '''@@ -1,0 +1,14 @@
++const sessions = {};
++function createSession(userId) {
++    // BUG: Predictable session ID — sequential counter
++    const sessionId = String(Object.keys(sessions).length + 1);
++    sessions[sessionId] = { userId, created: Date.now() };
++    return sessionId;
++}
++function getSession(req) {
++    const sid = req.cookies.session_id;
++    // BUG: No session expiry check
++    return sessions[sid] || null;
++}''',
+        "lines_changed": 12, "has_tests": False,
+        "bug_category": "security_vulnerability", "ground_truth_severity": "critical",
+        "bug_lines": [3, 10], "human_labels": ["critical", "critical", "high"],
+        "human_agreement": 0.67, "cohen_kappa": 0.65,
+    },
+    {
+        "pr_id": "PR-044", "title": "Add data migration script",
+        "description": "Migrates user data from legacy schema to new normalized tables.",
+        "author_experience": "mid", "language": "python", "filename": "migrations/migrate_users.py",
+        "diff": '''@@ -1,0 +1,16 @@
++def migrate_users(old_db, new_db):
++    users = old_db.execute("SELECT * FROM legacy_users").fetchall()
++    for user in users:
++        # BUG: No transaction — partial migration on failure
++        new_db.execute("INSERT INTO users (id, name) VALUES (?, ?)",
++                      (user["id"], user["name"]))
++        if user.get("address"):
++            new_db.execute("INSERT INTO addresses (user_id, addr) VALUES (?, ?)",
++                          (user["id"], user["address"]))
++    # BUG: No commit call
++    print(f"Migrated {len(users)} users")''',
+        "lines_changed": 11, "has_tests": False,
+        "bug_category": "missing_error_handling", "ground_truth_severity": "medium",
+        "bug_lines": [4, 10], "human_labels": ["medium", "high", "medium"],
+        "human_agreement": 0.67, "cohen_kappa": 0.55,
+    },
+    {
+        "pr_id": "PR-045", "title": "Refactor logging configuration",
+        "description": "Centralized logging setup with structured JSON output.",
+        "author_experience": "senior", "language": "python", "filename": "core/logging.py",
+        "diff": '''@@ -1,12 +1,12 @@
+-import logging
+-logging.basicConfig(level=logging.DEBUG)
+-logger = logging.getLogger(__name__)
++import logging, json, sys
++def setup_logging(level="INFO"):
++    handler = logging.StreamHandler(sys.stdout)
++    handler.setFormatter(JsonFormatter())
++    root = logging.getLogger()
++    root.setLevel(getattr(logging, level))
++    root.addHandler(handler)
++class JsonFormatter(logging.Formatter):
++    def format(self, record):
++        return json.dumps({"level": record.levelname,
++                           "msg": record.getMessage(),
++                           "time": self.formatTime(record)})''',
+        "lines_changed": 12, "has_tests": True,
+        "bug_category": "style_only", "ground_truth_severity": "none",
+        "bug_lines": [], "human_labels": ["none", "none", "none"],
+        "human_agreement": 1.0, "cohen_kappa": 1.0,
+    },
+    {
+        "pr_id": "PR-046", "title": "Add GraphQL resolver for orders",
+        "description": "GraphQL resolvers for order queries with nested product lookups.",
+        "author_experience": "mid", "language": "typescript", "filename": "src/resolvers/orders.ts",
+        "diff": '''@@ -1,0 +1,16 @@
++export const orderResolvers = {
++    Query: {
++        orders: async (_, { userId }) => {
++            // BUG: No authorization check — any user can query any user's orders
++            return db.orders.findMany({ where: { userId } });
++        },
++    },
++    Order: {
++        products: async (order) => {
++            // BUG: N+1 query — fetches products one by one per order
++            return Promise.all(order.productIds.map(id => db.products.findUnique({ where: { id } })));
++        },
++    },
++};''',
+        "lines_changed": 14, "has_tests": False,
+        "bug_category": "security_vulnerability", "ground_truth_severity": "critical",
+        "bug_lines": [4, 10], "human_labels": ["critical", "high", "critical"],
+        "human_agreement": 0.67, "cohen_kappa": 0.65,
+    },
+    {
+        "pr_id": "PR-047", "title": "Add password reset flow",
+        "description": "Password reset via email with token generation and validation.",
+        "author_experience": "junior", "language": "python", "filename": "auth/password_reset.py",
+        "diff": '''@@ -1,0 +1,14 @@
++import random, string, time
++tokens = {}
++def create_reset_token(email):
++    # BUG: Weak random — predictable token
++    token = ''.join(random.choices(string.ascii_letters, k=20))
++    tokens[token] = {"email": email, "created": time.time()}
++    return token
++def reset_password(token, new_password):
++    data = tokens.get(token)
++    if not data:
++        return False
++    # BUG: No token expiry check
++    # BUG: No password strength validation
++    db.update_password(data["email"], new_password)
++    return True''',
+        "lines_changed": 15, "has_tests": False,
+        "bug_category": "security_vulnerability", "ground_truth_severity": "critical",
+        "bug_lines": [4, 12, 13], "human_labels": ["critical", "critical", "critical"],
+        "human_agreement": 1.0, "cohen_kappa": 1.0,
+    },
+    {
+        "pr_id": "PR-048", "title": "Optimize database indexes",
+        "description": "Added composite indexes for common query patterns.",
+        "author_experience": "senior", "language": "python", "filename": "migrations/add_indexes.py",
+        "diff": '''@@ -1,0 +1,10 @@
++def upgrade():
++    # These are pure schema improvements — no bugs
++    op.create_index("idx_orders_user_date", "orders", ["user_id", "created_at"])
++    op.create_index("idx_products_category", "products", ["category_id", "is_active"])
++    op.create_index("idx_sessions_token", "sessions", ["token"], unique=True)
++
++def downgrade():
++    op.drop_index("idx_orders_user_date")
++    op.drop_index("idx_products_category")
++    op.drop_index("idx_sessions_token")''',
+        "lines_changed": 10, "has_tests": True,
+        "bug_category": "style_only", "ground_truth_severity": "none",
+        "bug_lines": [], "human_labels": ["none", "none", "none"],
+        "human_agreement": 1.0, "cohen_kappa": 1.0,
+    },
+    {
+        "pr_id": "PR-049", "title": "Add event-driven notification system",
+        "description": "Pub/sub event system for triggering notifications across services.",
+        "author_experience": "mid", "language": "python", "filename": "events/dispatcher.py",
+        "diff": '''@@ -1,0 +1,18 @@
++class EventDispatcher:
++    def __init__(self):
++        self.handlers = {}
++    def subscribe(self, event_type, handler):
++        self.handlers.setdefault(event_type, []).append(handler)
++    def dispatch(self, event_type, data):
++        for handler in self.handlers.get(event_type, []):
++            # BUG: No error isolation — one handler failure stops all
++            handler(data)
++    def dispatch_async(self, event_type, data):
++        import threading
++        for handler in self.handlers.get(event_type, []):
++            # BUG: Unbounded thread creation — no pool
++            t = threading.Thread(target=handler, args=(data,))
++            t.start()
++            # BUG: No join — threads left dangling''',
+        "lines_changed": 16, "has_tests": False,
+        "bug_category": "missing_error_handling", "ground_truth_severity": "medium",
+        "bug_lines": [8, 13, 16], "human_labels": ["medium", "medium", "high"],
+        "human_agreement": 0.67, "cohen_kappa": 0.60,
+    },
+    {
+        "pr_id": "PR-050", "title": "Add data validation pipeline",
+        "description": "Schema validation for incoming API payloads with custom rules.",
+        "author_experience": "junior", "language": "python", "filename": "validation/pipeline.py",
+        "diff": '''@@ -1,0 +1,18 @@
++def validate_payload(data, schema):
++    errors = []
++    for field, rules in schema.items():
++        value = data.get(field)
++        if rules.get("required") and value is None:
++            errors.append(f"{field} is required")
++            continue
++        if rules.get("type") and not isinstance(value, rules["type"]):
++            # BUG: isinstance check fails when value is None (already checked above)
++            errors.append(f"{field} must be {rules['type'].__name__}")
++        if rules.get("max_length") and len(value) > rules["max_length"]:
++            # BUG: len() on None crashes — need null check first
++            errors.append(f"{field} exceeds max length")
++    return errors''',
+        "lines_changed": 14, "has_tests": False,
+        "bug_category": "null_pointer", "ground_truth_severity": "high",
+        "bug_lines": [9, 12], "human_labels": ["high", "medium", "high"],
+        "human_agreement": 0.67, "cohen_kappa": 0.60,
     },
 ]
 

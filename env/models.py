@@ -26,7 +26,7 @@ class PRFile(BaseModel):
     @field_validator("language")
     @classmethod
     def validate_language(cls, v: str) -> str:
-        allowed = {"python", "javascript", "java", "go"}
+        allowed = {"python", "javascript", "java", "go", "rust", "typescript", "ruby"}
         if v not in allowed:
             raise ValueError(f"language must be one of {allowed}")
         return v

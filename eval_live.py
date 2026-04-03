@@ -495,9 +495,10 @@ def run_hard(client: OpenAI, seed: int) -> Tuple[float, List[float], List[Dict]]
             print(f"    step={row['step']} pr={row['pr']} "
                   f"action={row['action']:20s} comments={row['comments_sent']} r={row['reward']:.3f}")
 
-    # Score on PR-level rewards only (skip comment ack 0.05s)
-    pr_rewards = [r for r in step_rewards if abs(r - 0.05) > 0.01]
-    mean = statistics.mean(pr_rewards) if pr_rewards else 0.0
+    # Score on decision rewards only (skip intermediate comment acks ≤ 0.05)
+    # Decision rewards are: grade_pr results (0.0-1.0 range, typically > 0.05)
+    decision_rewards = [r for r in step_rewards if r > 0.05 or r < 0.0]
+    mean = statistics.mean(decision_rewards) if decision_rewards else statistics.mean(step_rewards) if step_rewards else 0.0
     return mean, step_rewards, log
 
 

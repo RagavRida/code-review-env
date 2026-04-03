@@ -1,33 +1,33 @@
 {
   "agent": "heuristic_baseline",
-  "composite": 0.5469,
+  "composite": 0.5954,
   "seed": 42,
   "episodes_per_task": 3,
   "easy": {
-    "mean": 0.8,
-    "std": 0.2646,
+    "mean": 0.7333,
+    "std": 0.1155,
     "scores": [
-      0.5,
-      1.0,
-      0.9
+      0.8,
+      0.6,
+      0.8
     ]
   },
   "medium": {
     "mean": 0.4667,
-    "std": 0.0764,
+    "std": 0.1041,
     "scores": [
-      0.45,
-      0.4,
-      0.55
+      0.5833,
+      0.3833,
+      0.4333
     ]
   },
   "hard": {
-    "mean": 0.3741,
-    "std": 0.073,
+    "mean": 0.5861,
+    "std": 0.0921,
     "scores": [
-      0.4583,
-      0.3333,
-      0.3306
+      0.6889,
+      0.5583,
+      0.5111
     ]
   },
   "elapsed_seconds": 0.0
