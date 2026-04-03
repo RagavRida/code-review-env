@@ -350,6 +350,14 @@ class CodeReviewEnv:
         # Coverage bonus: catch all critical bugs
         # Only applied at episode end to encourage thorough review
         breakdown["coverage_bonus"] = 0.0
+        if self.task_name == "hard" and self.done:
+            # Check if the grader's coverage component averaged >= 0.9
+            # across all PRs reviewed in this episode
+            coverage_scores = [
+                r for r in self.step_rewards if r > 0.0  # non-zero means actual review
+            ]
+            if coverage_scores and sum(coverage_scores) / len(coverage_scores) >= 0.7:
+                breakdown["coverage_bonus"] = 0.15
 
         # Compute shaping adjustment (only the bonuses/penalties added here)
         shaping_adjustment = (

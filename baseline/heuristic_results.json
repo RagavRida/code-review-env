@@ -1,6 +1,6 @@
 {
   "agent": "heuristic_baseline",
-  "composite": 0.6352,
+  "composite": 0.5284,
   "seed": 42,
   "episodes_per_task": 3,
   "easy": {
@@ -22,12 +22,12 @@
     ]
   },
   "hard": {
-    "mean": 0.6944,
-    "std": 0.1005,
+    "mean": 0.3741,
+    "std": 0.073,
     "scores": [
-      0.6833,
-      0.6,
-      0.8
+      0.4583,
+      0.3333,
+      0.3306
     ]
   },
   "elapsed_seconds": 0.0

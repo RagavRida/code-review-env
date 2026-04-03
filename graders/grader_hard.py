@@ -34,7 +34,7 @@ class HardGrader:
     Deterministic grader for feedback generation (hard task).
 
     Five-component weighted scoring with exploit prevention.
-    Designed to be genuinely hard — GPT-4o-mini scores ~0.41,
+    Designed to be genuinely hard — a simple heuristic scores ~0.3,
     reflecting the difficulty of generating precise, actionable
     code review feedback targeting specific bug locations.
     """
@@ -48,10 +48,12 @@ class HardGrader:
     W_COVERAGE = 0.25
     W_PRECISION = 0.10
 
-    # Line proximity tolerance: ±5 lines counts as "relevant"
-    # Based on empirical code review: reviewers often reference
-    # nearby context lines rather than the exact bug line
-    LINE_TOLERANCE = 5
+    # Line proximity tolerance: ±3 lines counts as "relevant"
+    # Tighter than typical review tools to reward precise targeting
+    LINE_TOLERANCE = 3
+
+    # Minimum keywords required for a comment to be "specific"
+    MIN_KEYWORDS_FOR_SPECIFIC = 2
 
     # Spam threshold: more than this many comments triggers penalty
     SPAM_THRESHOLD = 10
@@ -125,14 +127,21 @@ class HardGrader:
         breakdown["relevance"] = relevance
 
         # ── 2. Specificity (0.20): comments mention category keywords ─
+        # Requires 2+ keywords per comment for full credit (1 keyword = 0.5 credit)
         keywords = BUG_KEYWORDS.get(bug_category, [])
+        specific_score_sum = 0.0
         specific_count = 0
         for c in comments:
             if c.comment:
                 comment_lower = c.comment.lower()
-                if any(kw.lower() in comment_lower for kw in keywords):
+                kw_hits = sum(1 for kw in keywords if kw.lower() in comment_lower)
+                if kw_hits >= self.MIN_KEYWORDS_FOR_SPECIFIC:
+                    specific_score_sum += 1.0
                     specific_count += 1
-        specificity = specific_count / total_comments if total_comments > 0 else 0.0
+                elif kw_hits == 1:
+                    specific_score_sum += 0.5  # partial credit for 1 keyword
+                    specific_count += 1
+        specificity = specific_score_sum / total_comments if total_comments > 0 else 0.0
         breakdown["specificity"] = specificity
 
         # ── 3. Actionability (0.20): comments suggest concrete fixes ──
@@ -145,29 +154,23 @@ class HardGrader:
         actionability = actionable_count / total_comments if total_comments > 0 else 0.0
         breakdown["actionability"] = actionability
 
-        # ── 4. Coverage (0.25): critical/high bugs have relevant comments ─
-        total_critical = 1 if true_severity == "critical" else 0
-        total_high = 1 if true_severity == "high" else 0
-        critical_caught = 0
-        high_caught = 0
-
+        # ── 4. Coverage (0.25): measures % of bug lines addressed ────
+        # Now counts individual bug lines covered, not just binary
         if bug_lines:
+            lines_covered = set()
             for c in comments:
                 if c.target_line is not None:
                     for bl in bug_lines:
                         if abs(c.target_line - bl) <= self.LINE_TOLERANCE:
-                            if true_severity == "critical":
-                                critical_caught = 1
-                            elif true_severity == "high":
-                                high_caught = 1
-                            break
+                            lines_covered.add(bl)
+            coverage = len(lines_covered) / len(bug_lines)
 
-        denom = total_critical + 0.5 * total_high
-        if denom > 0:
-            coverage = (critical_caught + 0.5 * high_caught) / denom
+            # Depth penalty: if there are 3+ bugs but only 1 comment, penalize
+            if len(bug_lines) >= 3 and total_comments == 1:
+                coverage *= 0.5  # reviewing complex code with 1 comment is shallow
         else:
-            # No critical/high bugs — coverage is perfect by default
-            coverage = 1.0
+            # No bugs — coverage is based on correct decision
+            coverage = 1.0 if decision == "approve" else 0.5
         breakdown["coverage"] = coverage
 
         # ── 5. Precision (0.10): avoid false positives ────────────────

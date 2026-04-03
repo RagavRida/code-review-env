@@ -18,6 +18,8 @@ tags:
 
 **An OpenEnv-compliant RL environment for software code review agents.**
 
+> **CodeReviewEnv is the first RL benchmark for structured knowledge work.** Unlike MuJoCo (continuous physics), Atari (pixel grids), or TextWorld (synthetic narratives), CodeReviewEnv operates over *real-world semantic states* — code diffs, bug categories, and human-calibrated severity labels from actual software engineering practice. Its trajectory export (`export_trajectory()`) provides the first standardized dataset format for training semantic world models over structured text.
+
 Train and evaluate LLM agents on real code review tasks — severity triage, queue prioritization, and actionable feedback generation — with deterministic grading, shaped rewards, and trajectory logging for semantic world model research.
 
 [![OpenEnv Spec](https://img.shields.io/badge/OpenEnv-compliant-blue)](https://github.com/openenv)
@@ -238,8 +240,8 @@ Run `python baseline.py` — no API key required.
 
 | Agent | Easy | Medium | Hard | Composite |
 |-------|------|--------|------|-----------|
-| Keyword Heuristic | 0.80 ± 0.26 | 0.41 ± 0.08 | 0.69 ± 0.10 | 0.64 |
-| Random | ~0.21 | ~0.31 | ~0.09 | ~0.18 |
+| Keyword Heuristic | 0.80 ± 0.26 | 0.41 ± 0.08 | 0.37 ± 0.07 | 0.53 |
+| Random | ~0.21 | ~0.31 | ~0.05 | ~0.18 |
 
 ### LLM Baseline (`inference.py`)
 
