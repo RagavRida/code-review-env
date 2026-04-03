@@ -256,7 +256,7 @@ Run `python inference.py` with `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN` set.
 
 | Agent | Easy | Medium | Hard | Composite |
 |-------|------|--------|------|-----------|
-| GPT-4o-mini (estimated) | ~0.70 | ~0.90 | ~0.40 | ~0.67 |
+| GPT-4o-mini (measured) | 0.85 ± 0.07 | 0.35 ± 0.12 | 0.56 ± 0.11 | 0.59 |
 | Perfect Oracle | 1.00 | 1.00 | ~0.91 | ~0.97 |
 
 > **Note:** LLM scores depend on model version and API provider. Run `python inference.py` to generate reproducible results for your setup. Results are saved to `baseline/results.json`.
