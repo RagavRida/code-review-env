@@ -1,0 +1,66 @@
+name: code-review-env
+version: "1.0.0"
+description: >
+  A Semantic MDP environment for software code review.
+  Agents review pull requests across three difficulty levels:
+  severity labeling (easy), queue prioritization (medium),
+  and feedback generation (hard). Deterministic graders
+  enable reproducible research.
+
+entry_point: server.app:app
+port: 7860
+
+tasks:
+  - name: easy
+    description: Classify PR severity (none/low/medium/high/critical)
+    episode_length: 5
+  - name: medium
+    description: Prioritize review queue by urgency
+    episode_length: 3
+  - name: hard
+    description: Generate actionable review feedback for 3 PRs
+    episode_length: 18
+
+action_schema:
+  type: CodeReviewAction
+  fields:
+    action_type: str
+    severity: Optional[str]
+    priority_order: Optional[List[str]]
+    comment: Optional[str]
+    target_file: Optional[str]
+    target_line: Optional[int]
+
+observation_schema:
+  type: CodeReviewObservation
+  fields:
+    pr_id: str
+    title: str
+    description: str
+    author_experience: str
+    files: List[Dict]
+    existing_comments: List[str]
+    review_queue: List[str]
+    done: bool
+    reward: float
+    step_number: int
+    episode_budget: int
+
+state_schema:
+  type: CodeReviewState
+  fields:
+    episode_id: str
+    step_count: int
+    task: str
+    seed: int
+    reviewed_prs: List[str]
+    pending_prs: List[str]
+    total_reward: float
+    trajectory: List[Dict]
+
+metadata:
+  domain: software-engineering
+  formalism: semantic-mdp
+  grading: deterministic
+  reproducible: true
+  seed: 42

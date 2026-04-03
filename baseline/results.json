@@ -1,0 +1,22 @@
+{
+  "_note": "Placeholder results. Run 'python inference.py' with API_BASE_URL, MODEL_NAME, and HF_TOKEN set to generate real LLM-based scores.",
+  "model": "openai/gpt-4o-mini",
+  "composite": null,
+  "seed": 42,
+  "easy": {
+    "mean": null,
+    "std": null,
+    "scores": []
+  },
+  "medium": {
+    "mean": null,
+    "std": null,
+    "scores": []
+  },
+  "hard": {
+    "mean": null,
+    "std": null,
+    "scores": []
+  },
+  "elapsed_seconds": null
+}

@@ -1,0 +1,5 @@
+# Optional dependencies for world model research (Layer 3+)
+# Install with: pip install -r requirements-research.txt
+-r requirements.txt
+torch>=2.0.0
+sentence-transformers>=2.7.0

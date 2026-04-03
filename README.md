@@ -1,0 +1,568 @@
+---
+title: CodeReviewEnv
+emoji: 🔍
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+tags:
+  - openenv
+  - reinforcement-learning
+  - code-review
+  - mbrl
+  - knowledge-work
+  - llm-agents
+---
+
+# 🔍 CodeReviewEnv
+
+**An OpenEnv-compliant RL environment for software code review agents.**
+
+Train and evaluate LLM agents on real code review tasks — severity triage, queue prioritization, and actionable feedback generation — with deterministic grading, shaped rewards, and trajectory logging for semantic world model research.
+
+[![OpenEnv Spec](https://img.shields.io/badge/OpenEnv-compliant-blue)](https://github.com/openenv)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-green.svg)](LICENSE)
+
+---
+
+## Table of Contents
+
+- [Motivation](#motivation)
+- [Environment Description](#environment-description)
+- [Observation Space](#observation-space)
+- [Action Space](#action-space)
+- [Reward Design](#reward-design)
+- [Tasks](#tasks)
+- [Baseline Scores](#baseline-scores)
+- [Setup & Installation](#setup--installation)
+- [Usage](#usage)
+- [Running Inference](#running-inference)
+- [Environment Variables](#environment-variables)
+- [Pre-Submission Checklist](#pre-submission-checklist)
+- [Structured Logging Format](#structured-logging-format)
+- [Project Structure](#project-structure)
+- [Trajectory Dataset](#trajectory-dataset)
+- [Citation](#citation)
+
+---
+
+## Motivation
+
+### The Problem
+
+Modern AI agents are increasingly deployed for knowledge work — summarizing documents, triaging issues, reviewing code — yet the RL/agent community lacks environments that faithfully model these tasks. Existing benchmarks either live in toy domains (grid worlds, text adventures) or are evaluation-only suites (SWE-bench, WebArena) with no MDP formalism, reward shaping, or trajectory export.
+
+### Why CodeReviewEnv?
+
+Code review is one of the highest-volume, highest-impact knowledge tasks in software engineering. Every development team does it daily, and quality directly affects shipped software security, reliability, and maintainability. CodeReviewEnv fills a genuine gap:
+
+| Need | CodeReviewEnv |
+|------|---------------|
+| Real task that people do daily | ✅ Software code review |
+| MDP formalism with R(s,a,s') | ✅ Semantic MDP with shaped rewards |
+| Multiple difficulty levels | ✅ Easy / Medium / Hard |
+| Deterministic, reproducible grading | ✅ Seed-controlled, no stochastic graders |
+| Trajectory export for MBRL | ✅ JSONL `(s, a, r, s')` per step |
+| Deployable as a service | ✅ Docker + HF Space + OpenEnv spec |
+
+### Research Gap
+
+| Benchmark | State Space | Transition | World Model Support? |
+|-----------|-------------|------------|---------------------|
+| MuJoCo | ℝⁿ (joints) | Physics sim | Yes (Dreamer) |
+| Atari | Pixels | Game engine | Yes (MuZero) |
+| AgentBench | Text | N/A | No (eval only) |
+| SWE-bench | Code | N/A | No (eval only) |
+| **CodeReviewEnv** | **Semantic text** | **Semantic** | **Yes (this work)** |
+
+CodeReviewEnv introduces **semantic transitions** — the state is structured text (code diffs, bug patterns, author context) and the transition depends on *understanding meaning*. This enables a new class of **semantic world models** not benchmarked elsewhere.
+
+---
+
+## Environment Description
+
+CodeReviewEnv models the software code review process as a **Semantic Markov Decision Process (S-MDP)**. An agent receives pull request observations (code diffs, metadata, review history) and must take structured review actions (classify severity, prioritize queues, write feedback). A deterministic grader scores each action and the episode produces a clean trajectory suitable for RL training or world model research.
+
+### Episode Flow
+
+```
+reset(seed) → Observation₀
+    ↓
+step(Action₁) → (Observation₁, Reward₁, done₁, info₁)
+step(Action₂) → (Observation₂, Reward₂, done₂, info₂)
+    ...
+step(Actionₙ) → (Observationₙ, Rewardₙ, done=True, infoₙ)
+    ↓
+export_trajectory() → [(s₀, a₁, r₁, s₁), (s₁, a₂, r₂, s₂), ...]
+```
+
+- **`reset(seed)`** produces a clean initial state — no leakage between episodes
+- **`step(action)`** returns the standard `(observation, reward, done, info)` tuple
+- **`state()`** exposes the full internal state including trajectory history
+- **`export_trajectory()`** outputs `(s, a, r, s')` transitions in JSONL
+
+---
+
+## Observation Space
+
+The observation represents the semantic state `s ∈ S` visible to the agent at each timestep.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pr_id` | `str` | Unique pull request identifier (e.g. `PR-001`) |
+| `title` | `str` | Human-readable PR title |
+| `description` | `str` | PR description / summary |
+| `author_experience` | `str ∈ {junior, mid, senior}` | Experience level of the PR author |
+| `files` | `List[PRFile]` | Code diffs per file (see below) |
+| `existing_comments` | `List[str]` | Previously submitted review comments |
+| `review_queue` | `List[str]` | IDs of pending PRs in queue |
+| `step_number` | `int` | Current step in the episode (0-indexed) |
+| `episode_budget` | `int` | Steps remaining in this episode |
+
+### PRFile Schema
+
+Each file in `files` contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `filename` | `str` | File path (e.g. `UserService.java`) |
+| `language` | `str ∈ {python, javascript, java, go}` | Programming language |
+| `diff` | `str` | Unified diff of changes |
+| `lines_changed` | `int` | Number of modified lines |
+| `has_tests` | `bool` | Whether the PR includes test coverage |
+
+---
+
+## Action Space
+
+The action space is **heterogeneous** — different `action_type` values activate different required fields. This mirrors real code review decisions.
+
+| `action_type` | Required Fields | Description |
+|---------------|----------------|-------------|
+| `label_severity` | `severity ∈ {critical, high, medium, low, none}` | Classify the bug severity of the current PR |
+| `prioritize` | `priority_order: List[str]` | Order the review queue by urgency (most urgent first) |
+| `add_comment` | `comment: str`, `target_file: str`, `target_line: int` | Add a review comment targeting a specific line in a specific file |
+| `approve` | — | Approve the PR (no remaining concerns) |
+| `request_changes` | — | Request changes (bugs found, feedback given) |
+
+### Action Validation
+
+- Actions with an `action_type` mismatched to the current task receive a penalty reward
+- Actions with missing required fields are handled gracefully (no crash, penalty applied)
+- The environment never raises on malformed actions — it returns a penalty `Reward` instead
+
+---
+
+## Reward Design
+
+Rewards are shaped to provide useful, varying signal — not just sparse terminal feedback. Each reward `R(s, a, s') ∈ [-1.0, 1.0]` includes a `breakdown` dict for component-level analysis.
+
+| Component | Value | When Applied |
+|-----------|-------|--------------|
+| `step_reward` | `[0.0, 1.0]` | Per-action quality score from the task-specific grader |
+| `efficiency_bonus` | `+0.10` | Complete the episode under budget |
+| `coverage_bonus` | `+0.15` | Catch all critical bugs in the PR |
+| `consistency_penalty` | `−0.20` | Contradict your own previous severity labels |
+| `exploit_penalty` | `−0.50` | Approve a PR with unaddressed critical bugs |
+
+### Reward Properties
+
+- **Bounded**: All rewards clamped to `[-1.0, 1.0]`
+- **Shaped**: Non-sparse signal at every step (not just at episode end)
+- **Transparent**: `reward.breakdown` exposes all components for reward attribution research
+- **Anti-exploit**: Spam comments and blind approvals are penalized (see tests)
+
+---
+
+## Tasks
+
+CodeReviewEnv provides **3 tasks** spanning easy → hard, with different skills and grading logic:
+
+### Task 1: Severity Labeling (Easy)
+
+| Property | Value |
+|----------|-------|
+| Difficulty | ⭐ Easy |
+| Episode Length | 5 steps (5 PRs) |
+| Objective | Classify each PR's bug severity |
+| Actions Used | `label_severity` |
+| Grader | Ordinal matching — exact match = 1.0, adjacent match = 0.6, off-by-two = 0.2, miss = 0.0. Extra penalties for confusing `critical` with `none`. |
+| Expected Score (random) | ~0.21 |
+| Expected Score (GPT-4o-mini) | ~0.73 |
+| Expected Score (perfect) | 1.00 |
+
+The agent sees one PR at a time and must label its severity. The grader uses ordinal distance on the severity scale: `none < low < medium < high < critical`.
+
+### Task 2: Queue Prioritization (Medium)
+
+| Property | Value |
+|----------|-------|
+| Difficulty | ⭐⭐ Medium |
+| Episode Length | 3 steps (3 queues of 5 PRs each) |
+| Objective | Sort the review queue by urgency |
+| Actions Used | `prioritize` |
+| Grader | Kendall Tau rank correlation + position penalty for misplacing top-priority items. Perfect ordering = 1.0, random ≈ 0.31, fully reversed ≈ 0.0. |
+| Expected Score (random) | ~0.31 |
+| Expected Score (GPT-4o-mini) | ~0.94 |
+| Expected Score (perfect) | 1.00 |
+
+The agent sees a queue of PRs with metadata (author level, bug category, test coverage) and must output the optimal priority ordering. Grading uses Kendall Tau correlation to smoothly rank all orderings.
+
+### Task 3: Feedback Generation (Hard)
+
+| Property | Value |
+|----------|-------|
+| Difficulty | ⭐⭐⭐ Hard |
+| Episode Length | Up to 18 steps (3 PRs × ≤6 actions each) |
+| Objective | Write actionable review comments, then approve or request changes |
+| Actions Used | `add_comment`, `approve`, `request_changes` |
+| Grader | 5-component weighted scorer: relevance (line targeting accuracy), specificity (domain keyword matching), actionability (concrete fix suggestions), coverage (% of bugs found), precision (signal-to-noise ratio). |
+| Expected Score (random) | ~0.09 |
+| Expected Score (GPT-4o-mini) | ~1.00 |
+| Expected Score (perfect oracle) | ~0.91 |
+
+This is the most challenging task. The agent must read code diffs, identify bugs, write specific comments targeting exact lines, use domain-specific terminology, and decide whether to approve or request changes. The multi-component grader ensures that generic, vague, or spammy comments score poorly.
+
+**Why GPT-4o-mini > perfect oracle on hard**: The "perfect" agent uses template-based comments with known bug lines. GPT-4o-mini generates more natural, specific comments that score higher on the specificity and actionability components.
+
+---
+
+## Baseline Scores
+
+Two baseline agents are included: a **heuristic agent** (no LLM, runs instantly via `baseline.py`) and an **LLM agent** (requires API key, via `inference.py`).
+
+### Heuristic Baseline (`baseline.py`)
+
+Run `python baseline.py` — no API key required.
+
+| Agent | Easy | Medium | Hard | Composite |
+|-------|------|--------|------|-----------|
+| Keyword Heuristic | 0.80 ± 0.26 | 0.41 ± 0.08 | 0.69 ± 0.10 | 0.64 |
+| Random | ~0.21 | ~0.31 | ~0.09 | ~0.18 |
+
+### LLM Baseline (`inference.py`)
+
+Run `python inference.py` with `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN` set.
+
+| Agent | Easy | Medium | Hard | Composite |
+|-------|------|--------|------|-----------|
+| GPT-4o-mini (estimated) | ~0.70 | ~0.90 | ~0.40 | ~0.67 |
+| Perfect Oracle | 1.00 | 1.00 | ~0.91 | ~0.97 |
+
+> **Note:** LLM scores depend on model version and API provider. Run `python inference.py` to generate reproducible results for your setup. Results are saved to `baseline/results.json`.
+
+**Key observations:**
+- Scores span the full `[0, 1]` range — the environment discriminates meaningfully
+- Random agent scores well below 0.5 on all tasks — no trivial gaming
+- Hard task genuinely challenges agents (random baseline scores only ~0.09)
+- All scores are deterministic given the same seed and model
+- Heuristic baseline runtime: < 2 seconds; LLM baseline: ~200 seconds
+
+---
+
+## Setup & Installation
+
+### Requirements
+
+- **Python 3.11+**
+- An OpenAI-compatible API key (OpenRouter, OpenAI, etc.)
+
+### Install Dependencies
+
+```bash
+# Clone the repository
+git clone https://huggingface.co/spaces/openenv/code-review-env
+cd code-review-env
+
+# Install core dependencies
+pip install -r requirements.txt
+
+# (Optional) Install research dependencies for world model training
+pip install -r requirements-research.txt
+```
+
+### Docker
+
+```bash
+# Build
+docker build -t code-review-env .
+
+# Run (serves on port 7860)
+docker run -p 7860:7860 code-review-env
+
+# Verify
+curl http://localhost:7860/health
+```
+
+### Validate
+
+```bash
+# Run the full OpenEnv compliance validation suite
+python validate.py
+
+# Run the test suite (19 tests across 5 categories)
+pytest tests/ -v
+```
+
+---
+
+## Usage
+
+### Direct Python API
+
+```python
+from env.base import CodeReviewEnv
+from env.models import Action
+
+# Initialize with task and seed
+env = CodeReviewEnv(task="easy", seed=42)
+obs = env.reset()
+
+# Take an action
+action = Action(action_type="label_severity", severity="high")
+obs, reward, done, info = env.step(action)
+
+print(f"Reward: {reward.value:.3f}")
+print(f"Breakdown: {reward.breakdown}")
+print(f"Done: {done}")
+
+# Run full episode
+while not done:
+    action = Action(action_type="label_severity", severity="medium")
+    obs, reward, done, info = env.step(action)
+
+# Export trajectory for MBRL research
+trajectory = env.export_trajectory()
+```
+
+### HTTP API (OpenEnv Server)
+
+```bash
+# Start the server
+uvicorn server.app:app --host 0.0.0.0 --port 7860
+
+# Health check
+curl http://localhost:7860/health
+
+# Reset (start new episode)
+curl -X POST http://localhost:7860/reset \
+  -H "Content-Type: application/json" \
+  -d '{"seed": 42}'
+
+# Step (take action)
+curl -X POST http://localhost:7860/step \
+  -H "Content-Type: application/json" \
+  -d '{"action": {"action_type": "label_severity", "severity": "high"}}'
+
+# Get current state
+curl http://localhost:7860/state
+
+# Environment metadata
+curl http://localhost:7860/metadata
+
+# OpenAPI docs: http://localhost:7860/docs
+```
+
+### OpenEnv Client (Async/Sync)
+
+```python
+import asyncio
+from code_review_env import CodeReviewEnv, CodeReviewAction
+
+async def main():
+    async with CodeReviewEnv(base_url="https://openenv-code-review-env.hf.space") as env:
+        result = await env.reset(seed=42)
+        print(result.observation.pr_id)
+
+        result = await env.step(
+            CodeReviewAction(action_type="label_severity", severity="high")
+        )
+        print(f"Reward: {result.reward}, Done: {result.done}")
+
+asyncio.run(main())
+
+# Or synchronous:
+with CodeReviewEnv(base_url="http://localhost:7860").sync() as env:
+    result = env.reset(seed=42)
+    result = env.step(CodeReviewAction(action_type="label_severity", severity="high"))
+```
+
+---
+
+## Running Inference
+
+The `inference.py` script is the mandatory evaluation entry point. It runs all 3 tasks, emits structured logs, and saves results.
+
+### Environment Variables
+
+These **must** be set before running inference:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `API_BASE_URL` | Yes | The API endpoint for the LLM (default: `https://openrouter.ai/api/v1`) |
+| `MODEL_NAME` | Yes | The model identifier (default: `openai/gpt-4o-mini`) |
+| `HF_TOKEN` | Yes | Your Hugging Face / API key. Also accepts `OPENAI_API_KEY` or `API_KEY`. |
+
+### Run
+
+```bash
+# Set required environment variables
+export API_BASE_URL="https://openrouter.ai/api/v1"
+export MODEL_NAME="openai/gpt-4o-mini"
+export HF_TOKEN="your-api-key-here"
+
+# Run inference (completes in < 20 minutes)
+python inference.py
+```
+
+### What It Does
+
+1. Initializes the OpenAI client with `API_BASE_URL` and `HF_TOKEN`
+2. Runs 3 episodes per task (easy, medium, hard) with `seed=42`
+3. Emits structured `[START]`, `[STEP]`, `[END]` logs to stdout
+4. Saves results to `baseline/results.json`
+
+---
+
+## Structured Logging Format
+
+The inference script emits structured stdout logs in the **mandatory** `[START]`, `[STEP]`, `[END]` format:
+
+### `[START]` — emitted once per task
+
+```
+[START] {"task_id": "easy", "task_description": "Classify PR severity (none/low/medium/high/critical)"}
+```
+
+### `[STEP]` — emitted for each action taken
+
+```
+[STEP] {"step": 1, "action": "{\"action_type\": \"label_severity\", \"severity\": \"high\"}", "observation": "pr_id=PR-001, title=Fix null pointer in UserService.java, step=0", "reward": 0.5, "done": false}
+```
+
+### `[END]` — emitted once per task at completion
+
+```
+[END] {"task_id": "easy", "total_reward": 3.5, "steps": 5, "success": true}
+```
+
+---
+
+## Pre-Submission Checklist
+
+| Check | Command / Verification | Status |
+|-------|----------------------|--------|
+| HF Space deploys | `curl https://openenv-code-review-env.hf.space/health` returns 200 | ✅ |
+| OpenEnv spec compliance | `python validate.py` — all 15 checks pass | ✅ |
+| Dockerfile builds | `docker build -t code-review-env .` | ✅ |
+| Baseline reproduces | `python baseline.py` completes end-to-end without errors | ✅ |
+| LLM inference | `python inference.py` completes with API key, saves `baseline/results.json` | ✅ |
+| 3+ tasks with graders | `easy`, `medium`, `hard` — all graders produce scores in `[0.0, 1.0]` | ✅ |
+| Tests pass | `pytest tests/ -v` — 19 tests across 5 categories | ✅ |
+| `API_BASE_URL` defined | Used by `inference.py` | ✅ |
+| `MODEL_NAME` defined | Used by `inference.py` | ✅ |
+| `HF_TOKEN` defined | Used by `inference.py` | ✅ |
+| `inference.py` in root | Located at `./inference.py` | ✅ |
+| Uses OpenAI Client | `from openai import OpenAI` | ✅ |
+| Structured stdout logs | `[START]`, `[STEP]`, `[END]` format | ✅ |
+| Runtime < 20 min | ~200 seconds | ✅ |
+| Runs on vcpu=2, memory=8GB | No GPU dependencies, lightweight CPU inference | ✅ |
+
+---
+
+## Project Structure
+
+```
+code-review-env/
+├── inference.py                # Mandatory LLM evaluation script (root)
+├── baseline.py                 # Heuristic baseline agent (no API key needed)
+├── openenv.yaml                # OpenEnv manifest
+├── Dockerfile                  # Python 3.11 + uvicorn on :7860
+├── requirements.txt            # Core dependencies
+├── requirements-research.txt   # Optional: torch, sentence-transformers
+├── pyproject.toml              # Package configuration
+├── validate.py                 # OpenEnv spec compliance validator
+├── models.py                   # OpenEnv Action/Observation/State subclasses
+├── client.py                   # CodeReviewEnv(EnvClient) — async/sync client
+├── __init__.py                 # Package exports
+│
+├── env/                        # Core environment logic
+│   ├── base.py                 # CodeReviewEnv main class (S-MDP)
+│   ├── models.py               # Internal Pydantic models (Action, Observation, Reward, State)
+│   ├── data_generator.py       # 20 PR templates with real code diffs
+│   └── trajectory_logger.py    # JSONL trajectory logging for MBRL
+│
+├── server/                     # OpenEnv-compliant server
+│   ├── code_review_environment.py  # Environment(OpenEnv base class)
+│   └── app.py                  # create_app() — FastAPI + WebSocket
+│
+├── tasks/                      # Three difficulty levels
+│   ├── task_easy.py            # Severity labeling (5 PRs/episode)
+│   ├── task_medium.py          # Queue prioritization (3 queues/episode)
+│   └── task_hard.py            # Feedback generation (3 PRs, multi-action)
+│
+├── graders/                    # Deterministic graders
+│   ├── grader_easy.py          # Ordinal matching + critical penalties
+│   ├── grader_medium.py        # Kendall Tau + position penalties
+│   ├── grader_hard.py          # 5-component weighted scorer
+│   └── reliability.py          # Cohen's Kappa, Krippendorff's Alpha
+│
+├── benchmark/                  # Baseline evaluation
+│   ├── protocol.py             # BenchmarkRunner, LaTeX tables
+│   └── agents.py               # RandomAgent, PerfectAgent
+│
+├── baseline/                   # Saved results
+│   └── results.json            # GPT-4o-mini baseline scores
+│
+├── world_model/                # MBRL research scaffold
+│   └── scaffold.py             # SemanticTransitionDataset, WorldModelTrainer
+│
+└── tests/                      # 19 tests across 5 categories
+    └── test_env.py             # Core, grader, variance, reproducibility, exploit tests
+```
+
+---
+
+## Trajectory Dataset
+
+Each episode exports clean, structured trajectories for world model training:
+
+```python
+# Export from the environment
+trajectory = env.export_trajectory()
+
+# Each transition contains:
+# {
+#   "step": 0,
+#   "state": { ... observation dict ... },
+#   "action": { "action_type": "label_severity", "severity": "high" },
+#   "reward": 0.6,
+#   "next_state": { ... next observation dict ... },
+#   "done": false,
+#   "timestamp": "...",
+#   "episode_id": "...",
+#   "task": "easy"
+# }
+```
+
+**MBRL Research Application:** Encode states with sentence-transformers, train a transition model `f(z_t, a_t) → (z_{t+1}, r_t)`, then plan without the real environment — Dyna-Q over language state space. See `world_model/scaffold.py` for infrastructure.
+
+---
+
+## Citation
+
+```bibtex
+@misc{codereviewenv2026,
+  title={CodeReviewEnv: A Semantic RL Benchmark for Knowledge-Work Agents},
+  author={Raghav Rida},
+  year={2026},
+  note={OpenEnv Hackathon Submission}
+}
+```
+
+---
+
+## License
+
+BSD-3-Clause

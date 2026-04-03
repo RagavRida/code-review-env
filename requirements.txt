@@ -1,0 +1,8 @@
+openenv-core>=0.2.0
+pydantic>=2.0
+pyyaml>=6.0
+python-ulid>=2.0
+scipy>=1.10
+numpy>=1.24
+openai>=1.0
+websockets>=12.0
