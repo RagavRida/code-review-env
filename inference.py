@@ -36,6 +36,7 @@ STDOUT FORMAT
 """
 
 import asyncio
+import sys
 import json
 import os
 import re
@@ -100,7 +101,7 @@ def call_llm(client: OpenAI, system_prompt: str, user_prompt: str) -> str:
         )
         return (completion.choices[0].message.content or "").strip()
     except Exception as exc:
-        print(f"[DEBUG] Model request failed: {exc}", flush=True)
+        print(f"[DEBUG] Model request failed: {exc}", file=sys.stderr, flush=True)
         return ""
 
 
@@ -311,7 +312,7 @@ async def run_task(env: CodeReviewEnv, llm_client: OpenAI, task: str) -> float:
         success = score >= SUCCESS_SCORE_THRESHOLD
 
     except Exception as exc:
-        print(f"[DEBUG] Task {task} error: {exc}", flush=True)
+        print(f"[DEBUG] Task {task} error: {exc}", file=sys.stderr, flush=True)
 
     finally:
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
@@ -339,13 +340,13 @@ async def main() -> None:
             scores[task] = score
 
         composite = sum(scores.values()) / len(scores)
-        print(f"\n[SUMMARY] composite={composite:.3f} easy={scores['easy']:.3f} medium={scores['medium']:.3f} hard={scores['hard']:.3f}", flush=True)
+        print(f"\n[SUMMARY] composite={composite:.3f} easy={scores['easy']:.3f} medium={scores['medium']:.3f} hard={scores['hard']:.3f}", file=sys.stderr, flush=True)
 
     finally:
         try:
             await env.close()
         except Exception as e:
-            print(f"[DEBUG] env.close() error: {e}", flush=True)
+            print(f"[DEBUG] env.close() error: {e}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
