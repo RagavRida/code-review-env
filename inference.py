@@ -6,7 +6,7 @@ MANDATORY
     API_BASE_URL   The API endpoint for the LLM.
     MODEL_NAME     The model identifier to use for inference.
     HF_TOKEN       Your Hugging Face / API key.
-    IMAGE_NAME     The name of the local image to use for the environment if using from_docker_image()
+    IMAGE_NAME     The name of the local image to use for the environment if using from_docker_image() (also accepts LOCAL_IMAGE_NAME)
 
 - The inference script must be named `inference.py` and placed in the root directory of the project
 - Participants must use OpenAI Client for all LLM calls using above variables
@@ -50,7 +50,7 @@ from client import CodeReviewEnv
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-IMAGE_NAME = os.getenv("IMAGE_NAME")  # If using from_docker_image()
+IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")  # If using from_docker_image()
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
