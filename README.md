@@ -247,7 +247,7 @@ Run `python baseline.py` — no API key required.
 
 | Agent | Easy | Medium | Hard | Composite |
 |-------|------|--------|------|-----------|
-| Keyword Heuristic | 0.80 ± 0.26 | 0.41 ± 0.08 | 0.37 ± 0.07 | 0.53 |
+| Keyword Heuristic | 0.80 ± 0.26 | 0.47 ± 0.08 | 0.37 ± 0.07 | 0.55 |
 | Random | ~0.21 | ~0.31 | ~0.05 | ~0.18 |
 
 ### LLM Baseline (`inference.py`)

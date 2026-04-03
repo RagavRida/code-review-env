@@ -287,22 +287,51 @@ class CodeReviewEnvironment(
         """Grade feedback generation action.
 
         Hard task has per-PR multi-step grading:
-        - add_comment: accumulates comments, returns small ack reward
+        - add_comment: accumulates comments, returns decaying ack reward
         - approve/request_changes: triggers full PR grading via grade_pr()
+
+        Anti-exploit: consecutive comments get decaying reward (0.05 → 0.03 → 0.01)
+        to prevent the spam-then-decide loop.
         """
         pr_id = self.task.get_current_pr_id()
 
         if action.action_type == "add_comment":
             # Accumulate comment for later scoring
             self.grader.add_comment(pr_id, action)
-            # Process action updates hard task internal state
+            self.grader.consecutive_comments += 1
+
+            # Process action — updates task state (comment count increments)
             self.task.process_action(action.action_type)
-            # Small acknowledgment reward for commenting
-            info = {"comment_added": True, "pr_id": pr_id}
+
+            # Decaying ack reward: penalize consecutive comments without decision
+            base_ack = 0.05
+            spam_penalty = 0.02 * max(0, self.grader.consecutive_comments - 1)
+            ack_reward = max(0.01, base_ack - spam_penalty)
+
+            info = {
+                "comment_added": True,
+                "pr_id": pr_id,
+                "comments_so_far": self.task.comments_on_current_pr,
+                "consecutive_comments": self.grader.consecutive_comments,
+            }
             done = self.task.is_done()
-            return 0.05, {"comment_ack": 0.05}, info, done
+
+            # IMPORTANT: Rebuild observation so comment count updates in state
+            # (fixes frozen observation bug — Problem 3)
+            if not done:
+                next_obs = self.task.get_observation(self._step_count)
+                self._current_obs = self._convert_observation(
+                    next_obs, done=False, reward=ack_reward,
+                    reward_breakdown={"comment_ack": ack_reward},
+                    info=info,
+                )
+
+            return ack_reward, {"comment_ack": ack_reward}, info, done
 
         elif action.action_type in ("approve", "request_changes"):
+            # Reset consecutive comment counter on decision
+            self.grader.consecutive_comments = 0
+
             # Score all accumulated comments + decision
             reward_obj, info = self.grader.grade_pr(pr_id, action.action_type)
             # Advance to next PR

@@ -280,25 +280,32 @@ class CodeReviewEnv:
         grader_info: Dict = {}
 
         if action.action_type == "add_comment":
-            # Track comment in grader, give small feedback
+            # Track comment in grader, give decaying feedback
             self.grader.add_comment(pr_id, action)
+            self.grader.consecutive_comments += 1
             advanced = self.task.process_action("add_comment")
 
             # If auto-advanced due to comment limit, grade the PR
             if advanced:
+                self.grader.consecutive_comments = 0
                 self.reviewed_prs.append(pr_id)
                 reward, grader_info = self.grader.grade_pr(pr_id, "request_changes")
                 return reward, grader_info
 
-            # Intermediate comment — small positive signal for engagement
+            # Decaying ack: consecutive comments without decision get penalized
+            base_ack = 0.05
+            spam_penalty = 0.02 * max(0, self.grader.consecutive_comments - 1)
+            ack_value = max(0.01, base_ack - spam_penalty)
+
             reward = Reward(
-                value=0.05,
-                breakdown={"step_reward": 0.05},
-                reason="Comment recorded — awaiting decision.",
+                value=ack_value,
+                breakdown={"step_reward": ack_value},
+                reason=f"Comment {self.task.comments_on_current_pr} recorded — awaiting decision.",
             )
             return reward, grader_info
 
         elif action.action_type in ("approve", "request_changes"):
+            self.grader.consecutive_comments = 0
             self.reviewed_prs.append(pr_id)
             reward, grader_info = self.grader.grade_pr(pr_id, action.action_type)
             self.task.process_action(action.action_type)

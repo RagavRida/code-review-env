@@ -100,7 +100,7 @@ class MediumGrader:
             critical_in_gt_top = gt_top & set(critical_ids)
             critical_in_pred_top = pred_top & set(critical_ids)
             if len(critical_in_pred_top) < len(critical_in_gt_top):
-                breakdown["critical_position_penalty"] = -0.3
+                breakdown["critical_position_penalty"] = -0.15
 
         # ── Exploit prevention: security PR must be first ────────────
         # Security vulnerabilities should be at position 0 if GT says so
@@ -111,7 +111,7 @@ class MediumGrader:
             gt_first = ground_truth_order[0]
             pred_first = predicted_order[0]
             if gt_first in security_ids and pred_first not in security_ids:
-                breakdown["security_position_penalty"] = -0.2
+                breakdown["security_position_penalty"] = -0.10
 
         total = max(0.0, min(1.0, sum(breakdown.values())))
         reason = f"Kendall Tau: {tau:.3f}, normalized: {base_score:.3f}"

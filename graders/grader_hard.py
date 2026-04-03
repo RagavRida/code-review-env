@@ -62,12 +62,14 @@ class HardGrader:
         self.episode_comments: Dict[str, List[Action]] = {}  # pr_id → comments
         self.episode_decisions: Dict[str, str] = {}  # pr_id → approve/request_changes
         self.episode_penalties: float = 0.0
+        self.consecutive_comments: int = 0  # track spam pattern
 
     def reset(self) -> None:
         """Reset episode-level tracking."""
         self.episode_comments = {}
         self.episode_decisions = {}
         self.episode_penalties = 0.0
+        self.consecutive_comments = 0
 
     def add_comment(self, pr_id: str, action: Action) -> None:
         """Track a comment action for later scoring."""
