@@ -49,10 +49,11 @@ from client import CodeReviewEnv
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-IMAGE_NAME = os.getenv("IMAGE_NAME")
+IMAGE_NAME = os.getenv("IMAGE_NAME")  # If using from_docker_image()
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://openrouter.ai/api/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "openai/gpt-4o-mini"
+
+API_BASE_URL = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-4o-mini")
 BENCHMARK = "code-review-env"
 TEMPERATURE = 0.0
 MAX_TOKENS = 300
