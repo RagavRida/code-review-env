@@ -18,7 +18,7 @@ from typing import List, Optional, Dict, Any
 class PRFile(BaseModel):
     """A single file within a pull request diff."""
     filename: str
-    language: str  # python | javascript | java | go
+    language: str  # python | javascript | java | go | rust | typescript | ruby
     diff: str
     lines_changed: int
     has_tests: bool

@@ -210,6 +210,8 @@ class HardGrader:
 
         # ── Exploit: approve with unaddressed critical bug ───────────
         breakdown["critical_approve_penalty"] = 0.0
+        bugs = self._bugs_caught(comments, gt)
+        critical_caught = bugs.get("critical", 0)
         if decision == "approve" and true_severity == "critical" and critical_caught == 0:
             breakdown["critical_approve_penalty"] = -0.5
             self.episode_penalties += -0.5

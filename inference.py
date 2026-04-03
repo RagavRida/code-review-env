@@ -86,23 +86,27 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 
 # ─── LLM Interface ──────────────────────────────────────────────────────────
 
-def call_llm(client: OpenAI, system_prompt: str, user_prompt: str) -> str:
-    """Call the LLM using OpenAI Client. Returns response text."""
-    try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-            stream=False,
-        )
-        return (completion.choices[0].message.content or "").strip()
-    except Exception as exc:
-        print(f"[DEBUG] Model request failed: {exc}", file=sys.stderr, flush=True)
-        return ""
+def call_llm(client: OpenAI, system_prompt: str, user_prompt: str, max_retries: int = 3) -> str:
+    """Call the LLM using OpenAI Client with retry. Returns response text."""
+    for attempt in range(max_retries):
+        try:
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=TEMPERATURE,
+                max_tokens=MAX_TOKENS,
+                stream=False,
+            )
+            return (completion.choices[0].message.content or "").strip()
+        except Exception as exc:
+            print(f"[DEBUG] Attempt {attempt+1}/{max_retries} failed: {exc}", file=sys.stderr, flush=True)
+            if attempt < max_retries - 1:
+                import time
+                time.sleep(2 ** attempt)
+    return ""
 
 
 def parse_json_response(response: str) -> Optional[Dict]:

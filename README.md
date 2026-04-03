@@ -136,7 +136,7 @@ Each file in `files` contains:
 | Field | Type | Description |
 |-------|------|-------------|
 | `filename` | `str` | File path (e.g. `UserService.java`) |
-| `language` | `str ∈ {python, javascript, java, go}` | Programming language |
+| `language` | `str ∈ {python, javascript, java, go, rust, typescript, ruby}` | Programming language |
 | `diff` | `str` | Unified diff of changes |
 | `lines_changed` | `int` | Number of modified lines |
 | `has_tests` | `bool` | Whether the PR includes test coverage |
@@ -463,13 +463,13 @@ The inference script emits structured stdout logs in the **mandatory** `[START]`
 
 | Check | Command / Verification | Status |
 |-------|----------------------|--------|
-| HF Space deploys | `curl https://openenv-code-review-env.hf.space/health` returns 200 | ✅ |
-| OpenEnv spec compliance | `python validate.py` — all 15 checks pass | ✅ |
+| HF Space deploys | `curl https://ragavrida-code-review-env.hf.space/health` returns 200 | ✅ |
+| OpenEnv spec compliance | `python validate.py` — all 17 checks pass | ✅ |
 | Dockerfile builds | `docker build -t code-review-env .` | ✅ |
 | Baseline reproduces | `python baseline.py` completes end-to-end without errors | ✅ |
 | LLM inference | `python inference.py` completes with API key, saves `baseline/results.json` | ✅ |
 | 3+ tasks with graders | `easy`, `medium`, `hard` — all graders produce scores in `[0.0, 1.0]` | ✅ |
-| Tests pass | `pytest tests/ -v` — 19 tests across 5 categories | ✅ |
+| Tests pass | `pytest tests/ -v` — 21 tests across 6 categories | ✅ |
 | `API_BASE_URL` defined | Used by `inference.py` | ✅ |
 | `MODEL_NAME` defined | Used by `inference.py` | ✅ |
 | `HF_TOKEN` defined | Used by `inference.py` | ✅ |
