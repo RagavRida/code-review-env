@@ -1,60 +1,85 @@
-#!/usr/bin/env python3
 """
-CodeReviewEnv — Mandatory Inference Script
-============================================
-MANDATORY ENV VARS:
-    API_BASE_URL    The API endpoint for the LLM.
-    MODEL_NAME      The model identifier to use for inference.
-    HF_TOKEN        Your Hugging Face / API key.
+CodeReviewEnv — Inference Script
+===================================
+MANDATORY
+- Before submitting, ensure the following variables are defined in your environment configuration:
+    API_BASE_URL   The API endpoint for the LLM.
+    MODEL_NAME     The model identifier to use for inference.
+    HF_TOKEN       Your Hugging Face / API key.
+    IMAGE_NAME     The name of the local image to use for the environment if using from_docker_image()
 
-Uses OpenAI Client for all LLM calls.
-Emits structured stdout logs: [START], [STEP], [END]  — per task.
+- The inference script must be named `inference.py` and placed in the root directory of the project
+- Participants must use OpenAI Client for all LLM calls using above variables
 
-Log format (strict, matches OpenEnv spec exactly):
-    [START] {"task_id": "...", "task_description": "..."}
-    [STEP]  {"step": N, "action": "...", "observation": "...", "reward": 0.0, "done": false}
-    [END]   {"task_id": "...", "total_reward": 0.0, "steps": N, "success": false}
+STDOUT FORMAT
+- The script must emit exactly three line types to stdout, in this order:
+
+    [START] task=<task_name> env=<benchmark> model=<model_name>
+    [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
+    [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...,rn>
+
+  Rules:
+    - One [START] line at episode begin.
+    - One [STEP] line per step, immediately after env.step() returns.
+    - One [END] line after env.close(), always emitted (even on exception).
+    - reward and rewards are formatted to 2 decimal places.
+    - done and success are lowercase booleans: true or false.
+    - error is the raw last_action_error string, or null if none.
+    - All fields on a single line with no newlines within a line.
+
+  Example:
+    [START] task=severity-labeling env=code-review-env model=openai/gpt-4o-mini
+    [STEP] step=1 action=label_severity:high reward=0.50 done=false error=null
+    [STEP] step=2 action=label_severity:critical reward=1.00 done=false error=null
+    [STEP] step=3 action=label_severity:medium reward=0.80 done=true error=null
+    [END] success=true steps=3 score=0.767 rewards=0.50,1.00,0.80
 """
 
+import asyncio
+import json
 import os
 import re
-import sys
-import json
-import time
-import statistics
-from typing import Any, Dict, List, Optional, Tuple
+import textwrap
+from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
+from models import CodeReviewAction, CodeReviewObservation, CodeReviewState
+from client import CodeReviewEnv
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "openai/gpt-4o-mini")
-HF_TOKEN     = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
-
-SEED = 42
+IMAGE_NAME = os.getenv("IMAGE_NAME")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://openrouter.ai/api/v1"
+MODEL_NAME = os.getenv("MODEL_NAME") or "openai/gpt-4o-mini"
+BENCHMARK = "code-review-env"
 TEMPERATURE = 0.0
 MAX_TOKENS = 300
+SUCCESS_SCORE_THRESHOLD = 0.3
 
 
-# ─── Structured Logging (spec-compliant) ────────────────────────────────────
+# ─── Structured Logging (exact spec format) ──────────────────────────────────
 
-def log_start(task_id: str, task_description: str):
-    """Emit [START] structured log — one per task."""
-    entry = {"task_id": task_id, "task_description": task_description}
-    print(f"[START] {json.dumps(entry)}", flush=True)
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
-def log_step(step: int, action: str, observation: str, reward: float, done: bool):
-    """Emit [STEP] structured log — one per environment step."""
-    entry = {"step": step, "action": action, "observation": observation, "reward": reward, "done": done}
-    print(f"[STEP] {json.dumps(entry)}", flush=True)
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
 
 
-def log_end(task_id: str, total_reward: float, steps: int, success: bool):
-    """Emit [END] structured log — one per task."""
-    entry = {"task_id": task_id, "total_reward": total_reward, "steps": steps, "success": success}
-    print(f"[END] {json.dumps(entry)}", flush=True)
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
 # ─── LLM Interface ──────────────────────────────────────────────────────────
@@ -66,14 +91,15 @@ def call_llm(client: OpenAI, system_prompt: str, user_prompt: str) -> str:
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt},
+                {"role": "user", "content": user_prompt},
             ],
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
             stream=False,
         )
-        return completion.choices[0].message.content or ""
+        return (completion.choices[0].message.content or "").strip()
     except Exception as exc:
+        print(f"[DEBUG] Model request failed: {exc}", flush=True)
         return ""
 
 
@@ -89,396 +115,237 @@ def parse_json_response(response: str) -> Optional[Dict]:
         return json.loads(response)
     except json.JSONDecodeError:
         pass
-    for pattern in [r'\{[^{}]*\}', r'\{.*\}']:
-        m = re.search(pattern, response, re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except json.JSONDecodeError:
-                pass
+    m = re.search(r'\{.*\}', response, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
     return None
 
 
 # ─── System Prompts ──────────────────────────────────────────────────────────
 
-EASY_SYSTEM_PROMPT = """You are a senior software engineer performing code review.
-You will receive a pull request with a code diff. Your job is to assess the severity of any bugs present.
+EASY_SYSTEM_PROMPT = textwrap.dedent("""
+    You are a senior software engineer performing code review.
+    You will receive a pull request with a code diff. Assess the severity of any bugs present.
 
-Severity scale:
-- "critical": Security vulnerabilities (SQL injection, auth bypass, hardcoded secrets, etc.)
-- "high": Crashes or data corruption (null pointer dereference, race conditions, etc.)
-- "medium": Logic errors or missing error handling (off-by-one, uncaught exceptions, etc.)
-- "low": Performance issues (N+1 queries, unnecessary loops, etc.)
-- "none": Style-only changes, no bugs
+    Severity scale:
+    - "critical": Security vulnerabilities (SQL injection, auth bypass, hardcoded secrets)
+    - "high": Crashes or data corruption (null pointer dereference, race conditions)
+    - "medium": Logic errors or missing error handling (off-by-one, uncaught exceptions)
+    - "low": Performance issues (N+1 queries, unnecessary loops)
+    - "none": Style-only changes, no bugs
 
-Respond ONLY with valid JSON. No explanation, no markdown, no code blocks.
-Format: {"action_type": "label_severity", "severity": "<critical|high|medium|low|none>"}"""
+    Respond ONLY with valid JSON:
+    {"action_type": "label_severity", "severity": "<critical|high|medium|low|none>"}
+""").strip()
 
-MEDIUM_SYSTEM_PROMPT = """You are a senior software engineer managing a code review queue.
-You will receive a list of pull requests. Order them by review priority (most urgent first).
+MEDIUM_SYSTEM_PROMPT = textwrap.dedent("""
+    You are a senior software engineer managing a code review queue.
+    Order the PRs by review priority (most urgent first).
 
-Priority rules:
-1. Security-related PRs (SQL injection, auth issues) are always highest priority
-2. Higher severity bugs should be reviewed before lower severity ones
-3. PRs from junior developers need more urgent review than senior ones
-4. PRs without tests should be reviewed earlier
+    Priority rules:
+    1. Security-related PRs are always highest priority
+    2. Higher severity bugs before lower severity
+    3. Junior developers need more urgent review
+    4. PRs without tests should be reviewed earlier
 
-Respond ONLY with valid JSON. No explanation, no markdown, no code blocks.
-Format: {"action_type": "prioritize", "priority_order": ["PR-XXX", "PR-YYY", ...]}"""
+    Respond ONLY with valid JSON:
+    {"action_type": "prioritize", "priority_order": ["PR-XXX", "PR-YYY", ...]}
+""").strip()
 
-HARD_SYSTEM_PROMPT = """You are a senior software engineer performing detailed code review.
-You will see a pull request with a code diff. You must:
-1. Add specific, actionable review comments targeting buggy lines
-2. Then approve or request changes
+HARD_SYSTEM_PROMPT = textwrap.dedent("""
+    You are a senior software engineer performing detailed code review.
+    You must: 1) Add specific, actionable review comments targeting buggy lines
+              2) Then approve or request changes
 
-For comments, respond with JSON:
-{"action_type": "add_comment", "comment": "<specific actionable feedback>", "target_file": "<filename>", "target_line": <line_number>}
+    For comments:
+    {"action_type": "add_comment", "comment": "<specific feedback>", "target_file": "<filename>", "target_line": <line>}
 
-When done reviewing, respond with:
-{"action_type": "request_changes"} if there are bugs, or {"action_type": "approve"} if clean.
+    When done reviewing:
+    {"action_type": "request_changes"} if bugs found, or {"action_type": "approve"} if clean.
 
-Use domain-specific keywords in comments (e.g. "null check", "parameterized query", "mutex lock").
-Be specific about the bug and suggest a concrete fix.
-
-Respond ONLY with valid JSON. No explanation, no markdown, no code blocks."""
+    Respond ONLY with valid JSON.
+""").strip()
 
 
 # ─── Observation Formatting ──────────────────────────────────────────────────
 
-def format_observation_easy(obs) -> str:
+def format_obs_easy(obs: CodeReviewObservation) -> str:
     files_text = ""
     for f in obs.files:
-        files_text += f"\n--- {f.filename} ({f.language}, {f.lines_changed} lines changed"
-        files_text += f", {'has' if f.has_tests else 'no'} tests) ---\n"
-        files_text += f.diff + "\n"
+        files_text += f"\n--- {f['filename']} ({f['language']}, {f['lines_changed']} lines) ---\n"
+        files_text += f["diff"] + "\n"
     return (
-        f"Pull Request: {obs.pr_id}\nTitle: {obs.title}\n"
-        f"Description: {obs.description}\nAuthor experience: {obs.author_experience}\n"
-        f"{files_text}\n"
-        f"Step {obs.step_number + 1} of {obs.episode_budget + obs.step_number}. "
-        f"What is the severity of any bugs in this PR?"
+        f"PR: {obs.pr_id} | {obs.title}\n{obs.description}\n"
+        f"Author: {obs.author_experience}\n{files_text}\n"
+        f"What is the severity?"
     )
 
 
-def format_observation_medium(obs, queue_templates: List[Dict]) -> str:
-    queue_text = ""
-    for t in queue_templates:
-        has_tests = "has tests" if t.get("has_tests") else "no tests"
-        bug = t.get("bug_category", "unknown")
-        queue_text += f"\n- {t['pr_id']}: \"{t['title']}\" (author: {t['author_experience']}, "
-        queue_text += f"category: {bug}, {has_tests}, {t.get('lines_changed', '?')} lines changed)"
-        diff_preview = t.get("diff", "")[:200]
-        if diff_preview:
-            queue_text += f"\n  Diff preview: {diff_preview.strip()[:150]}..."
-    return (
-        f"Review Queue — Step {obs.step_number + 1} of {obs.episode_budget + obs.step_number}\n\n"
-        f"You have {len(queue_templates)} PRs to prioritize:{queue_text}\n\n"
-        f"Order these PRs by review priority (most urgent first). Return ALL PR IDs."
-    )
-
-
-def format_observation_hard(obs) -> str:
+def format_obs_medium(obs: CodeReviewObservation) -> str:
+    queue_text = f"PRs to prioritize: {', '.join(obs.review_queue)}\n"
     files_text = ""
     for f in obs.files:
-        files_text += f"\n--- {f.filename} ({f.language}, {f.lines_changed} lines changed) ---\n"
-        files_text += f.diff + "\n"
-    comments_text = ""
+        files_text += f"\n--- {f['filename']} ({f['language']}) ---\n"
+        files_text += (f["diff"][:300] + "...\n") if len(f["diff"]) > 300 else f["diff"] + "\n"
+    return f"Review Queue — Step {obs.step_number + 1}\n{queue_text}{files_text}\nOrder by priority."
+
+
+def format_obs_hard(obs: CodeReviewObservation) -> str:
+    files_text = ""
+    for f in obs.files:
+        files_text += f"\n--- {f['filename']} ({f['language']}, {f['lines_changed']} lines) ---\n"
+        files_text += f["diff"] + "\n"
+    comments = ""
     if obs.existing_comments:
-        comments_text = "\nYour previous comments on this PR:\n"
-        for c in obs.existing_comments:
-            comments_text += f"  - {c}\n"
-    return (
-        f"Pull Request: {obs.pr_id}\nTitle: {obs.title}\n"
-        f"Description: {obs.description}\nAuthor experience: {obs.author_experience}\n"
-        f"Remaining PRs in queue: {', '.join(obs.review_queue) if obs.review_queue else 'none'}\n"
-        f"{files_text}{comments_text}\n"
-        f"Review this code. If you see bugs, add a specific comment targeting the buggy line.\n"
-        f"If you've already commented on the main issues, use \"request_changes\" (if bugs) or \"approve\" (if clean)."
-    )
+        comments = "\nYour previous comments:\n" + "\n".join(f"  - {c}" for c in obs.existing_comments) + "\n"
+    return f"PR: {obs.pr_id} | {obs.title}\n{obs.description}\n{files_text}{comments}\nReview this code."
 
 
-def obs_summary(obs) -> str:
-    """Create a short observation summary for the log."""
-    return f"pr_id={obs.pr_id}, title={obs.title[:60]}, step={obs.step_number}"
+def action_to_str(action_dict: Dict) -> str:
+    """Convert action dict to a compact string for logging."""
+    at = action_dict.get("action_type", "unknown")
+    if at == "label_severity":
+        return f"label_severity:{action_dict.get('severity', '?')}"
+    elif at == "prioritize":
+        order = action_dict.get("priority_order", [])
+        return f"prioritize:[{','.join(order)}]"
+    elif at == "add_comment":
+        comment = (action_dict.get("comment", ""))[:50]
+        return f"add_comment:{comment}"
+    else:
+        return at
 
 
 # ─── Task Runners ────────────────────────────────────────────────────────────
 
-def run_easy(client: OpenAI, seed: int) -> Tuple[float, List[Dict]]:
-    """Run easy task episode. Returns (mean_reward, step_logs)."""
-    from env.base import CodeReviewEnv
-    from env.models import Action
-
-    env = CodeReviewEnv(task="easy", seed=seed)
-    obs = env.reset()
-
-    log_start(
-        task_id="easy",
-        task_description="Classify PR severity (none/low/medium/high/critical)",
-    )
-
-    step_rewards = []
-    total_steps = 0
-
-    for step in range(5):
-        prompt = format_observation_easy(obs)
-        response = call_llm(client, EASY_SYSTEM_PROMPT, prompt)
-        parsed = parse_json_response(response)
-
-        if parsed and parsed.get("severity"):
-            action = Action(action_type="label_severity", severity=parsed["severity"])
-        else:
-            action = Action(action_type="label_severity", severity="medium")
-
-        obs, reward, done, info = env.step(action)
-        total_steps = step + 1
-
-        action_str = json.dumps({"action_type": action.action_type, "severity": action.severity})
-        obs_str = obs_summary(obs)
-
-        log_step(
-            step=step + 1,
-            action=action_str,
-            observation=obs_str,
-            reward=round(reward.value, 4),
-            done=done,
-        )
-        step_rewards.append(reward.value)
-
-        if done:
-            break
-
-    mean = statistics.mean(step_rewards) if step_rewards else 0.0
-    total = sum(step_rewards)
-    success = mean >= 0.6  # threshold: better than random
-
-    log_end(
-        task_id="easy",
-        total_reward=round(total, 4),
-        steps=total_steps,
-        success=success,
-    )
-
-    return mean, step_rewards
+TASK_CONFIGS = {
+    "easy": {
+        "task_name": "severity-labeling",
+        "system_prompt": EASY_SYSTEM_PROMPT,
+        "max_steps": 5,
+        "format_obs": format_obs_easy,
+        "default_action": lambda obs: {"action_type": "label_severity", "severity": "medium"},
+    },
+    "medium": {
+        "task_name": "queue-prioritization",
+        "system_prompt": MEDIUM_SYSTEM_PROMPT,
+        "max_steps": 3,
+        "format_obs": format_obs_medium,
+        "default_action": lambda obs: {"action_type": "prioritize", "priority_order": list(obs.review_queue)},
+    },
+    "hard": {
+        "task_name": "feedback-generation",
+        "system_prompt": HARD_SYSTEM_PROMPT,
+        "max_steps": 18,
+        "format_obs": format_obs_hard,
+        "default_action": lambda obs: {"action_type": "request_changes"},
+    },
+}
 
 
-def run_medium(client: OpenAI, seed: int) -> Tuple[float, List[Dict]]:
-    """Run medium task episode. Returns (mean_reward, step_logs)."""
-    from env.base import CodeReviewEnv
-    from env.models import Action
-    from tasks.task_medium import MediumTask
+async def run_task(env: CodeReviewEnv, llm_client: OpenAI, task: str) -> float:
+    """Run a single task episode. Returns normalized score."""
+    config = TASK_CONFIGS[task]
+    rewards: List[float] = []
+    steps_taken = 0
+    success = False
+    score = 0.0
 
-    env = CodeReviewEnv(task="medium", seed=seed)
-    obs = env.reset()
+    log_start(task=config["task_name"], env=BENCHMARK, model=MODEL_NAME)
 
-    log_start(
-        task_id="medium",
-        task_description="Prioritize review queue by urgency",
-    )
+    try:
+        result = await env.reset(seed=42)
+        obs = result.observation
 
-    step_rewards = []
-    total_steps = 0
+        for step in range(1, config["max_steps"] + 1):
+            if result.done:
+                break
 
-    for step in range(3):
-        queue_templates = env.task.get_queue_templates(step)
-        prompt = format_observation_medium(obs, queue_templates)
-        response = call_llm(client, MEDIUM_SYSTEM_PROMPT, prompt)
-        parsed = parse_json_response(response)
+            # Get LLM response
+            user_prompt = config["format_obs"](obs)
+            response = call_llm(llm_client, config["system_prompt"], user_prompt)
+            parsed = parse_json_response(response)
 
-        queue_ids = [t["pr_id"] for t in queue_templates]
-        if parsed and parsed.get("priority_order"):
-            order = parsed["priority_order"]
-            for qid in queue_ids:
-                if qid not in order:
-                    order.append(qid)
-            order = [qid for qid in order if qid in queue_ids] or queue_ids
-            action = Action(action_type="prioritize", priority_order=order)
-        else:
-            action = Action(action_type="prioritize", priority_order=queue_ids)
-
-        obs, reward, done, info = env.step(action)
-        total_steps = step + 1
-
-        action_str = json.dumps({"action_type": "prioritize", "priority_order": action.priority_order})
-        obs_str = obs_summary(obs)
-
-        log_step(
-            step=step + 1,
-            action=action_str,
-            observation=obs_str,
-            reward=round(reward.value, 4),
-            done=done,
-        )
-        step_rewards.append(reward.value)
-
-        if done:
-            break
-
-    mean = statistics.mean(step_rewards) if step_rewards else 0.0
-    total = sum(step_rewards)
-    success = mean >= 0.5
-
-    log_end(
-        task_id="medium",
-        total_reward=round(total, 4),
-        steps=total_steps,
-        success=success,
-    )
-
-    return mean, step_rewards
-
-
-def run_hard(client: OpenAI, seed: int) -> Tuple[float, List[Dict]]:
-    """Run hard task episode. Returns (mean_reward, step_logs)."""
-    from env.base import CodeReviewEnv
-    from env.models import Action
-
-    env = CodeReviewEnv(task="hard", seed=seed)
-    obs = env.reset()
-
-    log_start(
-        task_id="hard",
-        task_description="Generate actionable review feedback for 3 PRs",
-    )
-
-    step_rewards = []
-    total_steps = 0
-    max_steps = 18  # 3 PRs × 6 actions max
-
-    for step in range(max_steps):
-        prompt = format_observation_hard(obs)
-        response = call_llm(client, HARD_SYSTEM_PROMPT, prompt)
-        parsed = parse_json_response(response)
-
-        if parsed:
-            action_type = parsed.get("action_type", "")
-            if action_type == "add_comment":
-                target_line = parsed.get("target_line", 1)
-                if not isinstance(target_line, int):
-                    try:
-                        target_line = int(target_line)
-                    except (ValueError, TypeError):
-                        target_line = 1
-                action = Action(
-                    action_type="add_comment",
-                    comment=parsed.get("comment", "Consider fixing this issue."),
-                    target_file=parsed.get("target_file", "unknown.py"),
-                    target_line=target_line,
-                )
-            elif action_type in ("approve", "request_changes"):
-                action = Action(action_type=action_type)
+            # Build action
+            if parsed and parsed.get("action_type"):
+                action_dict = parsed
             else:
-                action = Action(action_type="request_changes")
-        else:
-            action = Action(action_type="request_changes")
+                action_dict = config["default_action"](obs)
 
-        obs, reward, done, info = env.step(action)
-        total_steps = step + 1
+            # Ensure valid action fields
+            try:
+                action = CodeReviewAction(**action_dict)
+            except Exception:
+                action_dict = config["default_action"](obs)
+                action = CodeReviewAction(**action_dict)
 
-        action_dict = {"action_type": action.action_type}
-        if action.action_type == "add_comment":
-            action_dict["comment"] = (action.comment or "")[:100]
-            action_dict["target_file"] = action.target_file
-            action_dict["target_line"] = action.target_line
-        action_str = json.dumps(action_dict)
-        obs_str = obs_summary(obs)
+            # Step
+            result = await env.step(action)
+            obs = result.observation
+            reward = result.reward or 0.0
+            done = result.done
+            error = None
 
-        log_step(
-            step=step + 1,
-            action=action_str,
-            observation=obs_str,
-            reward=round(reward.value, 4),
-            done=done,
-        )
-        step_rewards.append(reward.value)
+            rewards.append(reward)
+            steps_taken = step
 
-        if done:
-            break
+            log_step(
+                step=step,
+                action=action_to_str(action_dict),
+                reward=reward,
+                done=done,
+                error=error,
+            )
 
-    # PR-level scoring: filter out comment acks (0.05)
-    pr_rewards = [r for r in step_rewards if abs(r - 0.05) > 0.01]
-    mean = statistics.mean(pr_rewards) if pr_rewards else 0.0
-    total = sum(step_rewards)
-    success = mean >= 0.3
+            if done:
+                break
 
-    log_end(
-        task_id="hard",
-        total_reward=round(total, 4),
-        steps=total_steps,
-        success=success,
-    )
+        # Compute score: mean reward normalized to [0, 1]
+        if rewards:
+            score = sum(rewards) / len(rewards)
+            score = min(max(score, 0.0), 1.0)
+        success = score >= SUCCESS_SCORE_THRESHOLD
 
-    return mean, step_rewards
+    except Exception as exc:
+        print(f"[DEBUG] Task {task} error: {exc}", flush=True)
+
+    finally:
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+    return score
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
-def main():
-    if not HF_TOKEN:
-        print("ERROR: No API key. Set HF_TOKEN, OPENAI_API_KEY, or API_KEY.", flush=True)
-        sys.exit(1)
+async def main() -> None:
+    llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    # Connect to environment via Docker image or HF Space
+    if IMAGE_NAME:
+        env = await CodeReviewEnv.from_docker_image(IMAGE_NAME)
+    else:
+        # Fallback: connect to running server
+        space_url = os.getenv("SPACE_URL", "https://ragavrida-code-review-env.hf.space")
+        env = CodeReviewEnv(base_url=space_url)
 
-    start_time = time.time()
-    all_results = {}
+    try:
+        scores = {}
+        for task in ["easy", "medium", "hard"]:
+            score = await run_task(env, llm_client, task)
+            scores[task] = score
 
-    # ── Easy Task ─────────────────────────────────────────────────────
-    easy_scores = []
-    for ep in range(3):
-        ep_seed = SEED + ep
-        score, logs = run_easy(client, ep_seed)
-        easy_scores.append(score)
-    easy_mean = statistics.mean(easy_scores)
-    easy_std = statistics.stdev(easy_scores) if len(easy_scores) > 1 else 0.0
-    all_results["easy"] = {"mean": round(easy_mean, 4), "std": round(easy_std, 4), "scores": [round(s, 4) for s in easy_scores]}
+        composite = sum(scores.values()) / len(scores)
+        print(f"\n[SUMMARY] composite={composite:.3f} easy={scores['easy']:.3f} medium={scores['medium']:.3f} hard={scores['hard']:.3f}", flush=True)
 
-    # ── Medium Task ───────────────────────────────────────────────────
-    medium_scores = []
-    for ep in range(3):
-        ep_seed = SEED + ep
-        score, logs = run_medium(client, ep_seed)
-        medium_scores.append(score)
-    medium_mean = statistics.mean(medium_scores)
-    medium_std = statistics.stdev(medium_scores) if len(medium_scores) > 1 else 0.0
-    all_results["medium"] = {"mean": round(medium_mean, 4), "std": round(medium_std, 4), "scores": [round(s, 4) for s in medium_scores]}
-
-    # ── Hard Task ─────────────────────────────────────────────────────
-    hard_scores = []
-    for ep in range(3):
-        ep_seed = SEED + ep
-        score, logs = run_hard(client, ep_seed)
-        hard_scores.append(score)
-    hard_mean = statistics.mean(hard_scores)
-    hard_std = statistics.stdev(hard_scores) if len(hard_scores) > 1 else 0.0
-    all_results["hard"] = {"mean": round(hard_mean, 4), "std": round(hard_std, 4), "scores": [round(s, 4) for s in hard_scores]}
-
-    # ── Save results ──────────────────────────────────────────────────
-    elapsed = time.time() - start_time
-    composite = round((easy_mean + medium_mean + hard_mean) / 3, 4)
-
-    results_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline", "results.json")
-    os.makedirs(os.path.dirname(results_path), exist_ok=True)
-    out = {
-        "model": MODEL_NAME,
-        "composite": composite,
-        "seed": SEED,
-        **all_results,
-        "elapsed_seconds": round(elapsed, 1),
-    }
-    with open(results_path, "w") as f:
-        json.dump(out, f, indent=2)
-
-    # Print summary
-    print(f"\n{'=' * 60}", flush=True)
-    print(f"INFERENCE COMPLETE — {MODEL_NAME}", flush=True)
-    print(f"  Composite: {composite:.4f}", flush=True)
-    print(f"  Easy:   {easy_mean:.4f} ± {easy_std:.4f}", flush=True)
-    print(f"  Medium: {medium_mean:.4f} ± {medium_std:.4f}", flush=True)
-    print(f"  Hard:   {hard_mean:.4f} ± {hard_std:.4f}", flush=True)
-    print(f"  Elapsed: {elapsed:.1f}s", flush=True)
-    print(f"{'=' * 60}", flush=True)
+    finally:
+        try:
+            await env.close()
+        except Exception as e:
+            print(f"[DEBUG] env.close() error: {e}", flush=True)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

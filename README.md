@@ -432,19 +432,19 @@ The inference script emits structured stdout logs in the **mandatory** `[START]`
 ### `[START]` — emitted once per task
 
 ```
-[START] {"task_id": "easy", "task_description": "Classify PR severity (none/low/medium/high/critical)"}
+[START] task=severity-labeling env=code-review-env model=openai/gpt-4o-mini
 ```
 
 ### `[STEP]` — emitted for each action taken
 
 ```
-[STEP] {"step": 1, "action": "{\"action_type\": \"label_severity\", \"severity\": \"high\"}", "observation": "pr_id=PR-001, title=Fix null pointer in UserService.java, step=0", "reward": 0.5, "done": false}
+[STEP] step=1 action=label_severity:high reward=0.50 done=false error=null
 ```
 
 ### `[END]` — emitted once per task at completion
 
 ```
-[END] {"task_id": "easy", "total_reward": 3.5, "steps": 5, "success": true}
+[END] success=true steps=5 score=0.767 rewards=0.50,1.00,0.80,0.60,0.93
 ```
 
 ---
