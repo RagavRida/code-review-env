@@ -75,11 +75,9 @@ _load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")  # If using from_docker_image()
-# Per spec: HF_TOKEN is the API key, API_BASE_URL is the endpoint.
-# HF_TOKEN takes priority so the platform's LiteLLM proxy key is always used.
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY")
-
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+# The platform injects API_BASE_URL and API_KEY — use them directly with OpenAI client.
+API_BASE_URL = os.environ["API_BASE_URL"]
+API_KEY = os.environ["API_KEY"]
 MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-4o-mini")
 BENCHMARK = "code-review-env"
 TEMPERATURE = 0.0
@@ -87,46 +85,11 @@ MAX_TOKENS = 500
 SUCCESS_SCORE_THRESHOLD = 0.3
 
 # Debug: show which API config is active (stderr only)
-_key_source = "HF_TOKEN" if os.getenv("HF_TOKEN") else "API_KEY" if os.getenv("API_KEY") else "OPENAI_API_KEY" if os.getenv("OPENAI_API_KEY") else "NONE"
 print(f"[DEBUG] API_BASE_URL = {API_BASE_URL}", file=sys.stderr, flush=True)
-print(f"[DEBUG] API_KEY source = {_key_source}", file=sys.stderr, flush=True)
-print(f"[DEBUG] API_KEY value (last 8) = ...{(API_KEY or '')[-8:]}", file=sys.stderr, flush=True)
+print(f"[DEBUG] API_KEY value (last 8) = ...{API_KEY[-8:]}", file=sys.stderr, flush=True)
 print(f"[DEBUG] MODEL_NAME = {MODEL_NAME}", file=sys.stderr, flush=True)
 
-def _maybe_disable_proxies() -> None:
-    """
-    OpenEnv's websocket client will honor HTTP(S)/SOCKS proxy env vars.
-    For local runs, misconfigured proxies are a common source of connection failure.
-    Set USE_PROXY=1 to keep proxy env vars enabled.
-    """
-    if os.getenv("USE_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}:
-        return
-    for k in (
-        "ALL_PROXY",
-        "HTTPS_PROXY",
-        "HTTP_PROXY",
-        "SOCKS_PROXY",
-        "SOCKS5_PROXY",
-        "all_proxy",
-        "https_proxy",
-        "http_proxy",
-        "socks_proxy",
-        "socks5_proxy",
-    ):
-        os.environ.pop(k, None)
 
-    # Ensure local proxy bypass includes the default HF Space host.
-    host = os.getenv("SPACE_URL", "https://ragavrida-code-review-env.hf.space")
-    try:
-        host = host.split("://", 1)[1].split("/", 1)[0]
-    except Exception:
-        host = "ragavrida-code-review-env.hf.space"
-    for k in ("NO_PROXY", "no_proxy"):
-        cur = os.getenv(k, "")
-        parts = [p.strip() for p in cur.split(",") if p.strip()]
-        if host not in parts:
-            parts.append(host)
-            os.environ[k] = ",".join(parts)
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -647,18 +610,10 @@ async def run_task(env: CodeReviewEnv, llm_client: OpenAI, task: str) -> float:
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 async def main() -> int:
-    # Initialize LLM client — if missing, we still emit [START]/[END] per task
-    llm_client = None
-    try:
-        if not API_KEY:
-            print("[DEBUG] No API key found (HF_TOKEN / OPENAI_API_KEY / API_KEY)", file=sys.stderr, flush=True)
-        else:
-            llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    except Exception as e:
-        print(f"[DEBUG] Failed to create LLM client: {e}", file=sys.stderr, flush=True)
+    # Initialize LLM client using the injected API_BASE_URL and API_KEY
+    llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
     scores = {}
-    _maybe_disable_proxies()
     space_url = os.getenv("SPACE_URL", "https://ragavrida-code-review-env.hf.space")
 
     for task in ["easy", "medium", "hard"]:
@@ -674,8 +629,6 @@ async def main() -> int:
         log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
         try:
-            if not llm_client:
-                raise RuntimeError("No LLM client available (missing API key)")
 
             # Fresh env per task to avoid reusing a closed ws connection.
             if IMAGE_NAME:
