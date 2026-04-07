@@ -101,18 +101,18 @@ class HardGrader:
         # ── Exploit check: no comments ───────────────────────────────
         if not comments:
             if decision == "approve":
-                breakdown["step_reward"] = 0.0
+                breakdown["step_reward"] = 0.01
                 return Reward(
-                    value=0.0,
+                    value=0.01,
                     breakdown=breakdown,
-                    reason="Approved without any review comments — score 0.0",
+                    reason="Approved without any review comments — near-zero score",
                 ), self._empty_info(pr_id)
             elif decision == "request_changes":
-                breakdown["step_reward"] = 0.0
+                breakdown["step_reward"] = 0.01
                 return Reward(
-                    value=0.0,
+                    value=0.01,
                     breakdown=breakdown,
-                    reason="Requested changes without any comments — score 0.0",
+                    reason="Requested changes without any comments — near-zero score",
                 ), self._empty_info(pr_id)
 
         total_comments = len(comments)
@@ -216,7 +216,7 @@ class HardGrader:
             breakdown["critical_approve_penalty"] = -0.5
             self.episode_penalties += -0.5
 
-        total = max(-1.0, min(1.0, step_score + breakdown["critical_approve_penalty"]))
+        total = max(0.01, min(0.99, step_score + breakdown["critical_approve_penalty"]))
 
         # Build detailed info
         info = {
@@ -315,4 +315,4 @@ class HardGrader:
         if not step_rewards:
             return 0.0
         mean_score = sum(step_rewards) / len(step_rewards)
-        return max(-1.0, min(1.0, mean_score + self.episode_penalties))
+        return max(0.01, min(0.99, mean_score + self.episode_penalties))

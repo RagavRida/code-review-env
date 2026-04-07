@@ -72,9 +72,9 @@ class EasyGrader:
         if action.action_type != "label_severity" or action.severity is None:
             self.predictions.append("none")
             self.ground_truths.append(true_severity)
-            breakdown["step_reward"] = 0.0
+            breakdown["step_reward"] = 0.01
             breakdown["critical_penalty"] = -0.3 if true_severity == "critical" else 0.0
-            total = max(-1.0, min(1.0, sum(breakdown.values())))
+            total = max(0.01, min(0.99, sum(breakdown.values())))
             return Reward(
                 value=total,
                 breakdown=breakdown,
@@ -90,11 +90,11 @@ class EasyGrader:
         true_idx = self.severity_index.get(true_severity, -1)
 
         if pred_idx == -1 or true_idx == -1:
-            # Unknown severity label — score 0
-            breakdown["step_reward"] = 0.0
+            # Unknown severity label — near-zero score
+            breakdown["step_reward"] = 0.01
         elif predicted == true_severity:
-            # Exact match — full score
-            breakdown["step_reward"] = 1.0
+            # Exact match — near-full score (strictly < 1.0 per validator)
+            breakdown["step_reward"] = 0.99
         elif abs(pred_idx - true_idx) == 1:
             # Adjacent match — half score
             # Empirically, one-level-off is a reasonable disagreement
@@ -102,7 +102,7 @@ class EasyGrader:
             breakdown["step_reward"] = 0.5
         else:
             # Wrong by 2+ levels
-            breakdown["step_reward"] = 0.0
+            breakdown["step_reward"] = 0.05
 
         # ── Exploit prevention penalties ─────────────────────────────
         # Asymmetric: missing critical is penalized more heavily because
@@ -115,7 +115,7 @@ class EasyGrader:
             elif predicted == "low":
                 breakdown["critical_penalty"] = -0.2  # Still very bad
 
-        total = max(-1.0, min(1.0, sum(breakdown.values())))
+        total = max(0.01, min(0.99, sum(breakdown.values())))
         reason = f"Predicted: {predicted}, Truth: {true_severity}"
         if breakdown["critical_penalty"] < 0:
             reason += f" (critical miss penalty: {breakdown['critical_penalty']})"

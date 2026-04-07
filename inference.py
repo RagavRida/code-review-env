@@ -544,7 +544,7 @@ async def run_task(env: CodeReviewEnv, llm_client: OpenAI, task: str) -> float:
     config = TASK_CONFIGS[task]
     rewards: List[float] = []
     steps_taken = 0
-    score = 0.0
+    score = 0.01
 
     result = await _maybe_await(env.reset(seed=42, task=task))
     obs = result.observation
@@ -636,7 +636,7 @@ async def run_task(env: CodeReviewEnv, llm_client: OpenAI, task: str) -> float:
     # Compute score: mean reward normalized to [0, 1]
     if rewards:
         score = sum(rewards) / len(rewards)
-        score = min(max(score, 0.0), 1.0)
+        score = min(max(score, 0.01), 0.99)
 
     return score, steps_taken, rewards
 

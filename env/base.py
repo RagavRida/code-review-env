@@ -193,8 +193,8 @@ class CodeReviewEnv:
         except Exception as e:
             # Never crash on agent output — return penalty
             reward = Reward(
-                value=-0.1,
-                breakdown={"step_reward": 0.0, "error_penalty": -0.1},
+                value=0.01,
+                breakdown={"step_reward": 0.01, "error_penalty": -0.01},
                 reason=f"Action processing error: {str(e)}",
             )
             info["parse_error"] = str(e)
@@ -376,7 +376,7 @@ class CodeReviewEnv:
         # Use original reward value + shaping adjustments only
         # (avoid double-counting grader component scores in breakdown)
         total = reward.value + shaping_adjustment
-        total = max(-1.0, min(1.0, total))
+        total = max(0.01, min(0.99, total))
 
         return Reward(
             value=total,

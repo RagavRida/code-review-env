@@ -65,11 +65,11 @@ class MediumGrader:
 
         # ── Validate action ──────────────────────────────────────────
         if action.action_type != "prioritize" or not action.priority_order:
-            breakdown["step_reward"] = 0.0
+            breakdown["step_reward"] = 0.01
             breakdown["critical_position_penalty"] = 0.0
             breakdown["security_position_penalty"] = 0.0
             return Reward(
-                value=0.0,
+                value=0.01,
                 breakdown=breakdown,
                 reason="Invalid action for prioritization. Expected prioritize with priority_order.",
             ), self._build_info([], ground_truth_order, queue_templates)
@@ -113,7 +113,7 @@ class MediumGrader:
             if gt_first in security_ids and pred_first not in security_ids:
                 breakdown["security_position_penalty"] = -0.10
 
-        total = max(0.0, min(1.0, sum(breakdown.values())))
+        total = max(0.01, min(0.99, sum(breakdown.values())))
         reason = f"Kendall Tau: {tau:.3f}, normalized: {base_score:.3f}"
         if breakdown["critical_position_penalty"] < 0:
             reason += f", critical position penalty: {breakdown['critical_position_penalty']}"

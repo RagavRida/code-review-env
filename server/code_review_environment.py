@@ -342,7 +342,7 @@ class CodeReviewEnvironment(
         else:
             # Invalid action for hard task — penalize
             info = {"error": f"Invalid action type: {action.action_type}"}
-            return -0.1, {"invalid_action": -0.1}, info, False
+            return 0.01, {"invalid_action": -0.01}, info, False
 
     def _convert_observation(
         self,
