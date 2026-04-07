@@ -256,16 +256,16 @@ Run `python inference.py` with `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN` set.
 
 | Agent | Easy | Medium | Hard | Composite |
 |-------|------|--------|------|-----------|
-| GPT-4o-mini (measured) | 0.90 ± 0.00 | 0.39 ± 0.06 | 0.20 ± 0.04 | 0.50 |
+| GPT-4o-mini (measured) | 1.00 ± 0.00 | 0.68 ± 0.02 | 0.38 ± 0.01 | 0.69 |
 | Perfect Oracle | 1.00 | 1.00 | ~0.91 | ~0.97 |
 
 > **Note:** LLM scores depend on model version and API provider. Run `python inference.py` to generate reproducible results for your setup. Results are saved to `baseline/results.json`.
 
 **Key observations:**
-- **Monotonic difficulty**: Easy (0.90) > Medium (0.39) > Hard (0.20) — validated with real LLM
-- **Clear agent separation**: Random (0.18) < Heuristic (0.55) < GPT-4o-mini (0.50) < Perfect (0.97)
-- **Large headroom**: GPT-4o-mini at 0.50 vs ceiling 0.97 — significant room for RL-trained improvement
-- **Hard is genuinely hard**: Even GPT-4o-mini scores only 0.20 on multi-turn feedback generation
+- **Monotonic difficulty**: Easy (1.00) > Medium (0.68) > Hard (0.38) — validated with real LLM
+- **Clear agent separation**: Random (0.18) < Heuristic (0.60) < GPT-4o-mini (0.69) < Perfect (0.97)
+- **Large headroom**: GPT-4o-mini at 0.69 vs ceiling 0.97 — significant room for RL-trained improvement
+- **Hard is genuinely hard**: Even GPT-4o-mini scores only 0.38 on multi-turn feedback generation
 - **Spam-resistant**: Decaying comment rewards prevent trivial exploit loops
 - All scores are deterministic given the same seed and model
 
