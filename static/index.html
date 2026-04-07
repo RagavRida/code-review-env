@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CodeReviewEnv — Interactive RL Benchmark</title>
+    <meta name="description" content="The first RL benchmark for structured knowledge work. Train AI agents on real code review tasks.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Hero -->
+    <header class="hero">
+        <div class="hero-bg"></div>
+        <div class="container">
+            <div class="hero-badge">OpenEnv Compliant</div>
+            <h1>🔍 CodeReviewEnv</h1>
+            <p class="hero-subtitle">The first RL benchmark for <span class="gradient-text">structured knowledge work</span></p>
+            <p class="hero-desc">Train and evaluate LLM agents on real code review tasks — severity triage, queue prioritization, and actionable feedback generation — with deterministic grading and trajectory export for world model research.</p>
+            <div class="hero-stats">
+                <div class="stat">
+                    <div class="stat-value">3</div>
+                    <div class="stat-label">Tasks</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">50</div>
+                    <div class="stat-label">PR Templates</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">7</div>
+                    <div class="stat-label">Languages</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">0.69</div>
+                    <div class="stat-label">GPT-4o-mini</div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Task Cards -->
+    <section class="section">
+        <div class="container">
+            <h2 class="section-title">Three Difficulty Levels</h2>
+            <div class="task-grid">
+                <div class="task-card" data-task="easy">
+                    <div class="task-difficulty easy">⭐ Easy</div>
+                    <h3>Severity Labeling</h3>
+                    <p>Classify each PR's bug severity: critical, high, medium, low, or none.</p>
+                    <div class="task-meta">
+                        <span>5 steps</span>
+                        <span>GPT-4o-mini: <strong>1.00</strong></span>
+                    </div>
+                    <button class="btn btn-primary" onclick="startDemo('easy')">Try It Live →</button>
+                </div>
+                <div class="task-card" data-task="medium">
+                    <div class="task-difficulty medium">⭐⭐ Medium</div>
+                    <h3>Queue Prioritization</h3>
+                    <p>Sort the review queue by urgency — security first, junior devs next.</p>
+                    <div class="task-meta">
+                        <span>3 steps</span>
+                        <span>GPT-4o-mini: <strong>0.68</strong></span>
+                    </div>
+                    <button class="btn btn-secondary" onclick="startDemo('medium')">Try It Live →</button>
+                </div>
+                <div class="task-card" data-task="hard">
+                    <div class="task-difficulty hard">⭐⭐⭐ Hard</div>
+                    <h3>Feedback Generation</h3>
+                    <p>Write actionable review comments targeting specific buggy lines.</p>
+                    <div class="task-meta">
+                        <span>18 steps max</span>
+                        <span>GPT-4o-mini: <strong>0.38</strong></span>
+                    </div>
+                    <button class="btn btn-accent" onclick="startDemo('hard')">Try It Live →</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Interactive Demo -->
+    <section class="section demo-section" id="demo">
+        <div class="container">
+            <h2 class="section-title">Interactive Demo</h2>
+            <div class="demo-container" id="demoContainer" style="display:none;">
+                <div class="demo-header">
+                    <div class="demo-task-badge" id="demoTaskBadge">Easy</div>
+                    <div class="demo-step" id="demoStep">Step 0 / 5</div>
+                    <div class="demo-score">
+                        Score: <span id="demoScore" class="score-value">0.00</span>
+                    </div>
+                </div>
+
+                <!-- PR Card -->
+                <div class="pr-card" id="prCard">
+                    <div class="pr-header">
+                        <span class="pr-id" id="prId">PR-001</span>
+                        <span class="pr-author" id="prAuthor">junior</span>
+                    </div>
+                    <h3 class="pr-title" id="prTitle">Loading...</h3>
+                    <p class="pr-desc" id="prDesc"></p>
+                    <div class="diff-container" id="diffContainer">
+                        <div class="diff-header">
+                            <span class="diff-filename" id="diffFilename">file.py</span>
+                            <span class="diff-lang" id="diffLang">python</span>
+                        </div>
+                        <pre class="diff-code" id="diffCode"></pre>
+                    </div>
+                </div>
+
+                <!-- Action Panel (Easy) -->
+                <div class="action-panel" id="actionPanelEasy" style="display:none;">
+                    <h4>Classify Bug Severity</h4>
+                    <div class="severity-buttons">
+                        <button class="sev-btn critical" onclick="submitAction('critical')">🔴 Critical</button>
+                        <button class="sev-btn high" onclick="submitAction('high')">🟠 High</button>
+                        <button class="sev-btn medium" onclick="submitAction('medium')">🟡 Medium</button>
+                        <button class="sev-btn low" onclick="submitAction('low')">🔵 Low</button>
+                        <button class="sev-btn none" onclick="submitAction('none')">⚪ None</button>
+                    </div>
+                </div>
+
+                <!-- Action Panel (Medium) -->
+                <div class="action-panel" id="actionPanelMedium" style="display:none;">
+                    <h4>Drag to Reorder by Priority</h4>
+                    <div class="queue-list" id="queueList"></div>
+                    <button class="btn btn-primary" onclick="submitPriorityOrder()">Submit Order →</button>
+                </div>
+
+                <!-- Action Panel (Hard) -->
+                <div class="action-panel" id="actionPanelHard" style="display:none;">
+                    <h4>Write Review Feedback</h4>
+                    <div class="comment-form">
+                        <input type="text" id="commentFile" placeholder="Target file" class="input-field">
+                        <input type="number" id="commentLine" placeholder="Line #" class="input-field input-small">
+                        <textarea id="commentText" placeholder="Your review comment..." class="input-field textarea-field"></textarea>
+                        <div class="hard-buttons">
+                            <button class="btn btn-primary" onclick="submitComment()">💬 Add Comment</button>
+                            <button class="btn btn-success" onclick="submitDecision('approve')">✅ Approve</button>
+                            <button class="btn btn-danger" onclick="submitDecision('request_changes')">🔄 Request Changes</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Reward Flash -->
+                <div class="reward-flash" id="rewardFlash" style="display:none;">
+                    <span class="reward-value" id="rewardValue">+1.00</span>
+                    <span class="reward-reason" id="rewardReason"></span>
+                </div>
+
+                <!-- Trajectory -->
+                <div class="trajectory" id="trajectory">
+                    <h4>Episode Trajectory</h4>
+                    <div class="trajectory-steps" id="trajectorySteps"></div>
+                </div>
+            </div>
+
+            <div class="demo-placeholder" id="demoPlaceholder">
+                <div class="placeholder-icon">🎮</div>
+                <p>Select a task above to start an interactive demo</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Research Section -->
+    <section class="section research-section">
+        <div class="container">
+            <h2 class="section-title">Research: Knowledge-Work World Models</h2>
+            <div class="research-grid">
+                <div class="research-card">
+                    <div class="research-icon">🧠</div>
+                    <h3>Semantic MDP</h3>
+                    <p>States are structured text (code diffs, bug categories). Transitions depend on professional judgment, not physics.</p>
+                </div>
+                <div class="research-card">
+                    <div class="research-icon">📊</div>
+                    <h3>Trajectory Export</h3>
+                    <p>Every episode exports (s, a, r, s') transitions in JSONL for training Knowledge-Work World Models.</p>
+                </div>
+                <div class="research-card">
+                    <div class="research-icon">🔬</div>
+                    <h3>Deterministic Grading</h3>
+                    <p>No LLM-as-judge. Ordinal matching, Kendall Tau correlation, and 5-component weighted scorers.</p>
+                </div>
+                <div class="research-card">
+                    <div class="research-icon">🛡️</div>
+                    <h3>Anti-Exploit</h3>
+                    <p>Spam penalties, consistency checks, and decaying rewards prevent trivial gaming strategies.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Benchmark Table -->
+    <section class="section">
+        <div class="container">
+            <h2 class="section-title">Benchmark Comparison</h2>
+            <div class="table-wrapper">
+                <table class="benchmark-table">
+                    <thead>
+                        <tr>
+                            <th>Benchmark</th>
+                            <th>State Space</th>
+                            <th>Transition</th>
+                            <th>World Model?</th>
+                            <th>Domain</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>MuJoCo</td><td>ℝⁿ (joints)</td><td>Physics sim</td><td>✅ Dreamer</td><td>Robotics</td></tr>
+                        <tr><td>Atari</td><td>Pixels</td><td>Game engine</td><td>✅ MuZero</td><td>Games</td></tr>
+                        <tr><td>TextWorld</td><td>Synthetic text</td><td>Game rules</td><td>⚠️ Li et al.</td><td>Text games</td></tr>
+                        <tr><td>SWE-bench</td><td>Code</td><td>N/A</td><td>❌ Eval only</td><td>SE</td></tr>
+                        <tr class="highlight-row"><td><strong>CodeReviewEnv</strong></td><td><strong>Structured text</strong></td><td><strong>Professional judgment</strong></td><td><strong>✅ KW-WM</strong></td><td><strong>Knowledge work</strong></td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- API Section -->
+    <section class="section api-section">
+        <div class="container">
+            <h2 class="section-title">API Endpoints</h2>
+            <div class="api-grid">
+                <div class="api-card">
+                    <code class="api-method post">POST</code>
+                    <code class="api-path">/reset</code>
+                    <p>Start new episode</p>
+                </div>
+                <div class="api-card">
+                    <code class="api-method post">POST</code>
+                    <code class="api-path">/step</code>
+                    <p>Take an action</p>
+                </div>
+                <div class="api-card">
+                    <code class="api-method get">GET</code>
+                    <code class="api-path">/state</code>
+                    <p>Current state</p>
+                </div>
+                <div class="api-card">
+                    <code class="api-method get">GET</code>
+                    <code class="api-path">/health</code>
+                    <p>Health check</p>
+                </div>
+                <div class="api-card">
+                    <code class="api-method get">GET</code>
+                    <code class="api-path">/export_trajectory</code>
+                    <p>JSONL trajectory</p>
+                </div>
+                <div class="api-card">
+                    <code class="api-method get">GET</code>
+                    <code class="api-path">/docs</code>
+                    <p>OpenAPI docs</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="container">
+            <p>CodeReviewEnv — OpenEnv Hackathon 2026 | BSD-3-Clause</p>
+        </div>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

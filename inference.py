@@ -75,7 +75,8 @@ _load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")  # If using from_docker_image()
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
+# Prioritize hackathon-injected API_KEY and API_BASE_URL over .env / HF_TOKEN
+API_KEY = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-4o-mini")
@@ -83,6 +84,11 @@ BENCHMARK = "code-review-env"
 TEMPERATURE = 0.0
 MAX_TOKENS = 500
 SUCCESS_SCORE_THRESHOLD = 0.3
+
+# Debug: show which API config is active (stderr only)
+print(f"[DEBUG] API_BASE_URL = {API_BASE_URL}", file=sys.stderr, flush=True)
+print(f"[DEBUG] API_KEY source = {'API_KEY' if os.getenv('API_KEY') else 'OPENAI_API_KEY' if os.getenv('OPENAI_API_KEY') else 'HF_TOKEN' if os.getenv('HF_TOKEN') else 'NONE'}", file=sys.stderr, flush=True)
+print(f"[DEBUG] MODEL_NAME = {MODEL_NAME}", file=sys.stderr, flush=True)
 
 def _maybe_disable_proxies() -> None:
     """
