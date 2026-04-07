@@ -330,136 +330,147 @@ TASK_CONFIGS = {
 
 
 async def run_task(env: CodeReviewEnv, llm_client: OpenAI, task: str) -> float:
-    """Run a single task episode. Returns normalized score."""
+    """Run a single task episode. Returns normalized score.
+    
+    NOTE: Caller is responsible for emitting [START] and [END] lines.
+    This function only emits [STEP] lines.
+    """
     config = TASK_CONFIGS[task]
     rewards: List[float] = []
     steps_taken = 0
-    success = False
     score = 0.0
 
-    log_start(task=config["task_name"], env=BENCHMARK, model=MODEL_NAME)
+    result = await _maybe_await(env.reset(seed=42))
+    obs = result.observation
 
-    try:
-        result = await _maybe_await(env.reset(seed=42))
-        obs = result.observation
+    for step in range(1, config["max_steps"] + 1):
+        if result.done:
+            break
 
-        for step in range(1, config["max_steps"] + 1):
-            if result.done:
-                break
+        # Get LLM response
+        try:
+            user_prompt = config["format_obs"](obs)
+            response = call_llm(llm_client, config["system_prompt"], user_prompt)
+            parsed = parse_json_response(response)
+        except Exception as e:
+            print(f"[DEBUG] LLM call failed at step {step}: {e}", file=sys.stderr, flush=True)
+            parsed = None
 
-            # Get LLM response
-            try:
-                user_prompt = config["format_obs"](obs)
-                response = call_llm(llm_client, config["system_prompt"], user_prompt)
-                parsed = parse_json_response(response)
-            except Exception as e:
-                print(f"[DEBUG] LLM call failed at step {step}: {e}", file=sys.stderr, flush=True)
-                parsed = None
+        # Build action
+        if parsed and parsed.get("action_type"):
+            action_dict = parsed
+        else:
+            action_dict = config["default_action"](obs)
 
-            # Build action
-            if parsed and parsed.get("action_type"):
-                action_dict = parsed
-            else:
-                action_dict = config["default_action"](obs)
+        # Ensure valid action fields
+        try:
+            action = CodeReviewAction(**action_dict)
+        except Exception as e:
+            print(f"[DEBUG] Action validation failed: {e}", file=sys.stderr, flush=True)
+            action_dict = config["default_action"](obs)
+            action = CodeReviewAction(**action_dict)
 
-            # Ensure valid action fields
-            try:
-                action = CodeReviewAction(**action_dict)
-            except Exception as e:
-                print(f"[DEBUG] Action validation failed: {e}", file=sys.stderr, flush=True)
-                action_dict = config["default_action"](obs)
-                action = CodeReviewAction(**action_dict)
+        # Step
+        try:
+            result = await _maybe_await(env.step(action))
+            obs = result.observation
+            reward = result.reward or 0.0
+            done = result.done
+            error = None
+        except Exception as e:
+            print(f"[DEBUG] env.step() failed: {e}", file=sys.stderr, flush=True)
+            reward = 0.0
+            done = True
+            error = str(e)
 
-            # Step
-            try:
-                result = await _maybe_await(env.step(action))
-                obs = result.observation
-                reward = result.reward or 0.0
-                done = result.done
-                error = None
-            except Exception as e:
-                print(f"[DEBUG] env.step() failed: {e}", file=sys.stderr, flush=True)
-                reward = 0.0
-                done = True
-                error = str(e)
+        rewards.append(reward)
+        steps_taken = step
 
-            rewards.append(reward)
-            steps_taken = step
+        log_step(
+            step=step,
+            action=action_to_str(action_dict),
+            reward=reward,
+            done=done,
+            error=error,
+        )
 
-            log_step(
-                step=step,
-                action=action_to_str(action_dict),
-                reward=reward,
-                done=done,
-                error=error,
-            )
+        if done:
+            break
 
-            if done:
-                break
+    # Compute score: mean reward normalized to [0, 1]
+    if rewards:
+        score = sum(rewards) / len(rewards)
+        score = min(max(score, 0.0), 1.0)
 
-        # Compute score: mean reward normalized to [0, 1]
-        if rewards:
-            score = sum(rewards) / len(rewards)
-            score = min(max(score, 0.0), 1.0)
-        success = score >= SUCCESS_SCORE_THRESHOLD
-
-    except Exception as exc:
-        print(f"[DEBUG] Task {task} error: {exc}", file=sys.stderr, flush=True)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-
-    finally:
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
-
-    return score
+    return score, steps_taken, rewards
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 async def main() -> int:
+    # Initialize LLM client — if missing, we still emit [START]/[END] per task
+    llm_client = None
     try:
-        # Initialize LLM client
         if not API_KEY:
-            raise ValueError("HF_TOKEN or OPENAI_API_KEY (or API_KEY) environment variable is required")
-        
-        llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-
-        scores = {}
-        _maybe_disable_proxies()
-        space_url = os.getenv("SPACE_URL", "https://ragavrida-code-review-env.hf.space")
-        for task in ["easy", "medium", "hard"]:
-            env = None
-            try:
-                # Fresh env per task to avoid reusing a closed ws connection.
-                if IMAGE_NAME:
-                    print(f"[DEBUG] Connecting to Docker image: {IMAGE_NAME}", file=sys.stderr, flush=True)
-                    env = await CodeReviewEnv.from_docker_image(IMAGE_NAME)
-                else:
-                    print(f"[DEBUG] Connecting to server: {space_url}", file=sys.stderr, flush=True)
-                    env = CodeReviewEnv(base_url=space_url)
-
-                score = await run_task(env, llm_client, task)
-                scores[task] = score
-            except Exception as e:
-                print(f"[ERROR] Task {task} failed: {e}", file=sys.stderr, flush=True)
-                scores[task] = 0.0
-            finally:
-                if env is not None:
-                    try:
-                        close_result = env.close()
-                        if inspect.isawaitable(close_result):
-                            await close_result
-                    except Exception as e:
-                        print(f"[DEBUG] env.close() error: {e}", file=sys.stderr, flush=True)
-
-        composite = sum(scores.values()) / len(scores)
-        print(f"\n[SUMMARY] composite={composite:.3f} easy={scores['easy']:.3f} medium={scores['medium']:.3f} hard={scores['hard']:.3f}", file=sys.stderr, flush=True)
-
+            print("[DEBUG] No API key found (HF_TOKEN / OPENAI_API_KEY / API_KEY)", file=sys.stderr, flush=True)
+        else:
+            llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     except Exception as e:
-        print(f"[ERROR] Main execution failed: {e}", file=sys.stderr, flush=True)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        return 1
+        print(f"[DEBUG] Failed to create LLM client: {e}", file=sys.stderr, flush=True)
+
+    scores = {}
+    _maybe_disable_proxies()
+    space_url = os.getenv("SPACE_URL", "https://ragavrida-code-review-env.hf.space")
+
+    for task in ["easy", "medium", "hard"]:
+        config = TASK_CONFIGS[task]
+        task_name = config["task_name"]
+        score = 0.0
+        steps_taken = 0
+        rewards: List[float] = []
+        success = False
+        env = None
+
+        # Always emit [START] to stdout
+        log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
+
+        try:
+            if not llm_client:
+                raise RuntimeError("No LLM client available (missing API key)")
+
+            # Fresh env per task to avoid reusing a closed ws connection.
+            if IMAGE_NAME:
+                print(f"[DEBUG] Connecting to Docker image: {IMAGE_NAME}", file=sys.stderr, flush=True)
+                env = await CodeReviewEnv.from_docker_image(IMAGE_NAME)
+            else:
+                print(f"[DEBUG] Connecting to server: {space_url}", file=sys.stderr, flush=True)
+                env = CodeReviewEnv(base_url=space_url)
+
+            score, steps_taken, rewards = await run_task(env, llm_client, task)
+            success = score >= SUCCESS_SCORE_THRESHOLD
+
+        except Exception as e:
+            print(f"[ERROR] Task {task} failed: {e}", file=sys.stderr, flush=True)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+
+        finally:
+            # Always emit [END] to stdout — even on failure
+            log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+            if env is not None:
+                try:
+                    close_result = env.close()
+                    if inspect.isawaitable(close_result):
+                        await close_result
+                except Exception as e:
+                    print(f"[DEBUG] env.close() error: {e}", file=sys.stderr, flush=True)
+
+        scores[task] = score
+
+    composite = sum(scores.values()) / max(len(scores), 1)
+    print(f"\n[SUMMARY] composite={composite:.3f} easy={scores.get('easy',0):.3f} medium={scores.get('medium',0):.3f} hard={scores.get('hard',0):.3f}", file=sys.stderr, flush=True)
+
     return 0
 
 
