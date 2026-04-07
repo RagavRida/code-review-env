@@ -39,10 +39,13 @@ class CodeReviewEnv(EnvClient[CodeReviewAction, CodeReviewObservation, CodeRevie
         """Parse the server's JSON response into a typed StepResult."""
         obs_data = payload.get("observation", payload.get("data", payload))
         observation = CodeReviewObservation(**obs_data)
+        # reward and done live at the top level of the payload, not inside observation
+        reward = payload.get("reward", getattr(observation, "reward", 0.0))
+        done = payload.get("done", getattr(observation, "done", False))
         return StepResult(
             observation=observation,
-            reward=observation.reward,
-            done=observation.done,
+            reward=reward,
+            done=done,
         )
 
     def _parse_state(self, payload: Dict[str, Any]) -> CodeReviewState:

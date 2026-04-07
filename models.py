@@ -58,7 +58,7 @@ class CodeReviewObservation(Observation):
     Adds code-review-specific fields.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
 
     pr_id: str = Field(default="", description="Pull request identifier")
     title: str = Field(default="", description="PR title")
