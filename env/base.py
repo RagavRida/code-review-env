@@ -314,8 +314,8 @@ class CodeReviewEnv:
         else:
             # Invalid action type for hard task
             reward = Reward(
-                value=-0.1,
-                breakdown={"step_reward": 0.0, "invalid_action_penalty": -0.1},
+                value=0.01,
+                breakdown={"step_reward": 0.01, "invalid_action_penalty": -0.01},
                 reason=f"Invalid action_type '{action.action_type}' for hard task.",
             )
             return reward, grader_info
@@ -387,8 +387,8 @@ class CodeReviewEnv:
     def _terminal_step(self) -> Tuple[Observation, Reward, bool, Dict]:
         """Handle step() calls after episode is done."""
         reward = Reward(
-            value=0.0,
-            breakdown={"step_reward": 0.0},
+            value=0.01,
+            breakdown={"step_reward": 0.01},
             reason="Episode already done.",
         )
         return self.current_obs, reward, True, {

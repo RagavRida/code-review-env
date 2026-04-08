@@ -255,7 +255,8 @@ class MediumGrader:
         return info
 
     def episode_score(self, step_rewards: List[float]) -> float:
-        """Compute episode-level score as mean of step rewards."""
+        """Compute episode-level score as mean of step rewards.
+        Clamped to (0, 1) exclusive as required by the validator."""
         if not step_rewards:
-            return 0.0
-        return sum(step_rewards) / len(step_rewards)
+            return 0.01
+        return max(0.01, min(0.99, sum(step_rewards) / len(step_rewards)))

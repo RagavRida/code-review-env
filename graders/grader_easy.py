@@ -226,7 +226,8 @@ class EasyGrader:
 
         This is the aggregate metric for the easy task.
         Each step reward is already in [-1, 1], so mean is also in [-1, 1].
+        Clamped to (0, 1) exclusive as required by the validator.
         """
         if not step_rewards:
-            return 0.0
-        return sum(step_rewards) / len(step_rewards)
+            return 0.01
+        return max(0.01, min(0.99, sum(step_rewards) / len(step_rewards)))

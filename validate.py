@@ -75,7 +75,7 @@ def validate():
         obs, reward, done, info = env.step(action)
         results.append(check(
             "step() with wrong action type doesn't crash",
-            isinstance(reward, Reward) and reward.value <= 0,
+            isinstance(reward, Reward) and 0 < reward.value < 1,
         ))
     except Exception as e:
         results.append(check("step() with invalid action doesn't crash", False, str(e)))
