@@ -75,14 +75,30 @@ _load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")  # If using from_docker_image()
-# The platform injects API_BASE_URL and API_KEY — use them directly with OpenAI client.
-API_BASE_URL = os.environ["API_BASE_URL"]
-API_KEY = os.environ["API_KEY"]
+
+# The platform injects API_BASE_URL and API_KEY at runtime.
+# Do NOT fall back to personal credentials (HF_TOKEN, OPENAI_API_KEY) —
+# all LLM calls MUST go through the platform's LiteLLM proxy.
+API_BASE_URL = os.environ.get("API_BASE_URL", "")
+API_KEY = os.environ.get("API_KEY", "")
 MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-4o-mini")
 BENCHMARK = "code-review-env"
 TEMPERATURE = 0.0
 MAX_TOKENS = 500
 SUCCESS_SCORE_THRESHOLD = 0.3
+
+if not API_BASE_URL:
+    print("[FATAL] API_BASE_URL is not set. The platform must inject this.", file=sys.stderr, flush=True)
+    sys.exit(1)
+if not API_KEY:
+    print("[FATAL] API_KEY is not set. The platform must inject this.", file=sys.stderr, flush=True)
+    sys.exit(1)
+
+# IMPORTANT: Override OPENAI_API_KEY and OPENAI_BASE_URL in the environment
+# so the OpenAI SDK does NOT auto-configure from stale env vars.
+# We always want to use our explicitly-set API_BASE_URL and API_KEY.
+os.environ["OPENAI_API_KEY"] = API_KEY
+os.environ["OPENAI_BASE_URL"] = API_BASE_URL
 
 # Debug: show which API config is active (stderr only)
 print(f"[DEBUG] API_BASE_URL = {API_BASE_URL}", file=sys.stderr, flush=True)
@@ -125,36 +141,55 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 # ─── LLM Interface ──────────────────────────────────────────────────────────
 
 def call_llm(client: OpenAI, system_prompt: str, user_prompt: str, max_retries: int = 3) -> str:
-    """Call the LLM using OpenAI Client with retry. Returns response text."""
-    model_candidates = [MODEL_NAME]
-    if "/" in MODEL_NAME:
-        model_candidates.append(MODEL_NAME.split("/", 1)[1])
+    """Call the LLM using OpenAI Client with retry. Returns response text.
+
+    Uses ONLY the configured MODEL_NAME — no model name variants.
+    This ensures all requests go through the LiteLLM proxy with the
+    exact model name it expects.
+    """
+    import time
+    last_error = None
 
     for attempt in range(max_retries):
-        for model in model_candidates:
-            try:
-                completion = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=TEMPERATURE,
-                    max_tokens=MAX_TOKENS,
-                    stream=False,
-                )
-                return (completion.choices[0].message.content or "").strip()
-            except Exception as exc:
-                print(
-                    f"[DEBUG] Attempt {attempt+1}/{max_retries} failed (model={model}): {exc}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                # Try next candidate model (if any) before sleeping/retrying.
-                continue
-        if attempt < max_retries - 1:
-            import time
-            time.sleep(2 ** attempt)
+        try:
+            print(
+                f"[DEBUG] LLM call attempt {attempt+1}/{max_retries} model={MODEL_NAME} base_url={client.base_url}",
+                file=sys.stderr,
+                flush=True,
+            )
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=TEMPERATURE,
+                max_tokens=MAX_TOKENS,
+                stream=False,
+            )
+            result = (completion.choices[0].message.content or "").strip()
+            print(
+                f"[DEBUG] LLM call succeeded, response length={len(result)}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return result
+        except Exception as exc:
+            last_error = exc
+            print(
+                f"[DEBUG] Attempt {attempt+1}/{max_retries} failed (model={MODEL_NAME}): {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+
+    # All retries exhausted — log loudly but don't crash the episode
+    print(
+        f"[ERROR] All {max_retries} LLM call attempts failed. Last error: {last_error}",
+        file=sys.stderr,
+        flush=True,
+    )
     return ""
 
 
@@ -610,8 +645,35 @@ async def run_task(env: CodeReviewEnv, llm_client: OpenAI, task: str) -> float:
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 async def main() -> int:
-    # Initialize LLM client using the injected API_BASE_URL and API_KEY
+    # Initialize LLM client using the injected API_BASE_URL and API_KEY.
+    # Explicitly pass both to ensure all requests go through the LiteLLM proxy.
     llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+
+    # ── Startup connectivity check ──────────────────────────────────────────
+    # Make a minimal LLM call to verify the proxy is reachable and the model
+    # name is valid. This ensures we fail loudly if something is misconfigured
+    # rather than silently falling back to default actions.
+    try:
+        print("[DEBUG] Testing LiteLLM proxy connectivity...", file=sys.stderr, flush=True)
+        test_completion = llm_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=5,
+            temperature=0.0,
+        )
+        print(
+            f"[DEBUG] Proxy connectivity OK — model={MODEL_NAME}, "
+            f"response={test_completion.choices[0].message.content!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception as e:
+        print(
+            f"[WARNING] Proxy connectivity test failed: {e}. "
+            f"Continuing anyway — LLM calls may fail.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     scores = {}
     space_url = os.getenv("SPACE_URL", "https://ragavrida-code-review-env.hf.space")
