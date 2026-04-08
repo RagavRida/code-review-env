@@ -86,7 +86,7 @@ class CodeReviewEnvironment(
         self._reviewed_prs = []
         self.grader.reset()
         internal_obs = self.task.reset()
-        self._current_obs = self._convert_observation(internal_obs, done=False, reward=0.0)
+        self._current_obs = self._convert_observation(internal_obs, done=False, reward=None)
 
     # ─── OpenEnv API ─────────────────────────────────────────────────────
 
@@ -123,7 +123,7 @@ class CodeReviewEnvironment(
 
         # Get initial observation from task
         internal_obs = self.task.reset()
-        self._current_obs = self._convert_observation(internal_obs, done=False, reward=0.0)
+        self._current_obs = self._convert_observation(internal_obs, done=False, reward=None)
         return self._current_obs
 
     def step(
@@ -348,7 +348,7 @@ class CodeReviewEnvironment(
         self,
         internal_obs,
         done: bool,
-        reward: float,
+        reward: Optional[float] = None,
         reward_breakdown: Optional[Dict] = None,
         info: Optional[Dict] = None,
     ) -> CodeReviewObservation:
