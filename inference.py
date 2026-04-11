@@ -213,39 +213,28 @@ Respond ONLY with valid JSON:
 
 # ─── Observation Formatting ──────────────────────────────────────────────────
 
-def format_observation(obs: CodeReviewObservation) -> str:
-    """Format observation for the LLM."""
-    # Add line numbers to code
-    lines = obs.code.split('\n')
-    numbered = '\n'.join(f"L{i+1}: {line}" for i, line in enumerate(lines))
-
+def format_code_for_llm(tool_result: Dict) -> str:
+    """Format code from get_code tool result for LLM prompt."""
+    code_numbered = tool_result.get("code_with_line_numbers", tool_result.get("code", ""))
+    language = tool_result.get("language", "unknown")
     return (
-        f"Language: {obs.language}\n"
-        f"Difficulty: {obs.difficulty}\n\n"
-        f"Code to review:\n```\n{numbered}\n```\n\n"
-        f"{obs.instructions}"
+        f"Language: {language}\n\n"
+        f"Code to review:\n```\n{code_numbered}\n```\n\n"
+        f"Identify bugs, report line numbers, suggest fixes, and write a review comment."
     )
 
 
-def action_to_str(action_dict: Dict) -> str:
-    """Convert action dict to a compact string for logging."""
-    at = action_dict.get("action_type", "submit_review")
-    if at == "flag_line":
-        return f"flag_line:{action_dict.get('line', '?')}"
-    elif at == "analyze":
-        return "analyze"
-    elif at == "request_hint":
-        return "request_hint"
-    else:
-        n_issues = len(action_dict.get("issues", []))
-        n_lines = len(action_dict.get("flagged_lines", []))
-        return f"submit_review:{n_issues}_issues,{n_lines}_lines"
-
-
-# ─── Task Runner ─────────────────────────────────────────────────────────────
+# ─── Task Runner (MCP tool-calling pattern) ─────────────────────────────────
 
 async def run_task(env: CodeReviewEnv, llm_client: OpenAI, difficulty: str) -> tuple:
-    """Run a multi-step episode. Agent: analyze → flag lines → submit review."""
+    """Run a multi-step tool-calling episode:
+    1. ListTools → discover available tools
+    2. get_code → retrieve the buggy code
+    3. analyze_code → get structural analysis
+    4. LLM → generate review
+    5. check_line × N → flag suspicious lines
+    6. submit_review → final grading
+    """
     rewards: List[float] = []
     steps_taken = 0
     score = 0.01
@@ -253,25 +242,46 @@ async def run_task(env: CodeReviewEnv, llm_client: OpenAI, difficulty: str) -> t
     result = await _maybe_await(env.reset(seed=42, task=difficulty))
     obs = result.observation
 
-    # Step 1: Analyze the code (free action)
+    def _step(action_type, tool_name=None, arguments=None):
+        return CodeReviewAction(
+            action_type=action_type,
+            tool_name=tool_name,
+            arguments=arguments or {},
+        )
+
+    # Step 1: Get code
     try:
-        analyze_action = CodeReviewAction(action_type="analyze")
-        result = await _maybe_await(env.step(analyze_action))
+        result = await _maybe_await(env.step(_step("ToolCallAction", "get_code")))
         obs = result.observation
         rewards.append(result.reward or 0.0)
         steps_taken += 1
-        log_step(step=steps_taken, action="analyze", reward=result.reward or 0.0,
+        log_step(step=steps_taken, action="get_code", reward=result.reward or 0.0,
                  done=result.done, error=None)
         if result.done:
-            score = max(0.01, min(0.99, sum(rewards) / len(rewards) if rewards else 0.01))
-            return score, steps_taken, rewards
+            return max(0.01, min(0.99, rewards[-1])), steps_taken, rewards
     except Exception as e:
-        print(f"[DEBUG] analyze failed: {e}", file=sys.stderr, flush=True)
+        print(f"[DEBUG] get_code failed: {e}", file=sys.stderr, flush=True)
 
-    # Step 2: Use LLM to identify bugs and flag lines
-    user_prompt = format_observation(obs)
-    if obs.analysis:
-        user_prompt += f"\n\nAnalysis: {obs.analysis}"
+    # Step 2: Analyze code
+    try:
+        result = await _maybe_await(env.step(_step("ToolCallAction", "analyze_code")))
+        obs = result.observation
+        rewards.append(result.reward or 0.0)
+        steps_taken += 1
+        analysis = ""
+        if obs.tool_result:
+            analysis = obs.tool_result.get("analysis", "")
+        log_step(step=steps_taken, action="analyze_code", reward=result.reward or 0.0,
+                 done=result.done, error=None)
+    except Exception as e:
+        print(f"[DEBUG] analyze_code failed: {e}", file=sys.stderr, flush=True)
+        analysis = ""
+
+    # Step 3: Call LLM to identify bugs
+    code_result = obs.tool_result or {}
+    user_prompt = format_code_for_llm(code_result)
+    if analysis:
+        user_prompt += f"\n\nStructural analysis: {analysis}"
 
     try:
         response = call_llm(llm_client, REVIEW_SYSTEM_PROMPT, user_prompt)
@@ -285,77 +295,53 @@ async def run_task(env: CodeReviewEnv, llm_client: OpenAI, difficulty: str) -> t
         flagged = parsed.get("flagged_lines", [])
         flagged = [int(x) for x in flagged if isinstance(x, (int, float))]
 
-    # Step 2-3: Flag individual lines (intermediate feedback)
-    for line in flagged[:2]:  # Flag up to 2 lines
+    # Step 4-5: Check individual lines (intermediate feedback)
+    for line in flagged[:2]:
         try:
-            flag_action = CodeReviewAction(action_type="flag_line", line=line)
-            result = await _maybe_await(env.step(flag_action))
+            result = await _maybe_await(env.step(
+                _step("ToolCallAction", "check_line", {"line": line})
+            ))
             obs = result.observation
             reward = result.reward or 0.0
             rewards.append(reward)
             steps_taken += 1
-            log_step(step=steps_taken, action=f"flag_line:{line}", reward=reward,
+            log_step(step=steps_taken, action=f"check_line:{line}", reward=reward,
                      done=result.done, error=None)
             if result.done:
-                score = max(0.01, min(0.99, sum(r for r in rewards if r > 0) / max(1, len([r for r in rewards if r > 0])) if rewards else 0.01))
-                return score, steps_taken, rewards
+                return max(0.01, min(0.99, rewards[-1])), steps_taken, rewards
         except Exception as e:
-            print(f"[DEBUG] flag_line failed: {e}", file=sys.stderr, flush=True)
+            print(f"[DEBUG] check_line failed: {e}", file=sys.stderr, flush=True)
 
-    # Final step: Submit full review
+    # Final step: Submit review
+    review_args = {}
     if parsed:
-        action_dict = {
-            "action_type": "submit_review",
+        review_args = {
             "issues": parsed.get("issues", []),
-            "flagged_lines": parsed.get("flagged_lines", []),
+            "flagged_lines": [int(x) for x in parsed.get("flagged_lines", []) if isinstance(x, (int, float))],
             "suggestion": parsed.get("suggestion", ""),
             "comment": parsed.get("comment", ""),
         }
-    else:
-        action_dict = {
-            "action_type": "submit_review",
-            "issues": [],
-            "flagged_lines": [],
-            "suggestion": "",
-            "comment": "Unable to analyze the code.",
-        }
-
-    if not isinstance(action_dict.get("flagged_lines"), list):
-        action_dict["flagged_lines"] = []
-    action_dict["flagged_lines"] = [
-        int(x) for x in action_dict["flagged_lines"] if isinstance(x, (int, float))
-    ]
 
     try:
-        action = CodeReviewAction(**action_dict)
-    except Exception as e:
-        print(f"[DEBUG] Action validation failed: {e}", file=sys.stderr, flush=True)
-        action = CodeReviewAction(action_type="submit_review")
-
-    try:
-        result = await _maybe_await(env.step(action))
+        result = await _maybe_await(env.step(
+            _step("ToolCallAction", "submit_review", review_args)
+        ))
         obs = result.observation
         reward = result.reward or 0.01
         done = result.done
-        error = None
+        error = obs.error_message
     except Exception as e:
-        print(f"[DEBUG] env.step() failed: {e}", file=sys.stderr, flush=True)
+        print(f"[DEBUG] submit_review failed: {e}", file=sys.stderr, flush=True)
         reward = 0.01
         done = True
         error = str(e)
 
     rewards.append(reward)
     steps_taken += 1
+    n_issues = len(review_args.get("issues", []))
+    log_step(step=steps_taken, action=f"submit_review:{n_issues}_issues",
+             reward=reward, done=done, error=error)
 
-    log_step(
-        step=steps_taken,
-        action=action_to_str(action_dict),
-        reward=reward,
-        done=done,
-        error=error,
-    )
-
-    # Score is the final submit_review reward (the main grading)
     score = max(0.01, min(0.99, reward))
     return score, steps_taken, rewards
 

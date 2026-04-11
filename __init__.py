@@ -1,22 +1,29 @@
 """
-CodeReviewEnv — OpenEnv-compliant RL environment for software code review.
-
-Public API:
-    from code_review_env import CodeReviewEnv, CodeReviewAction, CodeReviewObservation
+CodeReviewEnv — MCP tool-calling RL environment for automated code review.
 """
 
+from typing import Any
+
 try:
-    # When installed as a package (pip install -e .)
-    from .models import CodeReviewAction, CodeReviewObservation, CodeReviewState
-    from .client import CodeReviewEnv
+    from .models import CodeReviewAction, CodeReviewObservation, CodeReviewState, MCPAction, MCPObservation
 except ImportError:
-    # When running from project root (PYTHONPATH=.)
-    from models import CodeReviewAction, CodeReviewObservation, CodeReviewState
-    from client import CodeReviewEnv
+    from models import CodeReviewAction, CodeReviewObservation, CodeReviewState, MCPAction, MCPObservation
 
 __all__ = [
-    "CodeReviewEnv",
     "CodeReviewAction",
     "CodeReviewObservation",
     "CodeReviewState",
+    "CodeReviewEnv",
+    "MCPAction",
+    "MCPObservation",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "CodeReviewEnv":
+        try:
+            from .client import CodeReviewEnv as _CodeReviewEnv
+        except ImportError:
+            from client import CodeReviewEnv as _CodeReviewEnv
+        return _CodeReviewEnv
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

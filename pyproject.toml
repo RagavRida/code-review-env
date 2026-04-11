@@ -3,51 +3,41 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "code-review-env"
-version = "1.0.0"
-description = "OpenEnv-compliant RL environment for software code review"
+name = "openenv-code-review"
+version = "2.0.0"
+description = "MCP tool-calling RL environment for automated code review"
 readme = "README.md"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.10"
 license = {text = "BSD-3-Clause"}
 
 dependencies = [
+    "openenv-core>=0.2.0",
     "openenv>=0.1.13",
-    "pydantic>=2.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.5.0",
     "pyyaml>=6.0",
-    "python-ulid>=2.0",
-    "scipy>=1.10",
-    "numpy>=1.24",
     "openai>=1.0",
+    "websockets>=12.0",
+    "requests>=2.31.0",
 ]
-
-[project.scripts]
-code-review-env = "server.app:main"
-server = "server.app:main"
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-]
-research = [
-    "torch>=2.0",
-    "sentence-transformers>=2.0",
-]
+dev = ["pytest>=8.0.0", "pytest-cov>=4.0.0"]
+ui = ["gradio>=4.0.0"]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = [
-    "env*",
-    "graders*",
-    "tasks*",
-    "benchmark*",
-    "analysis*",
-    "world_model*",
-    "server*",
-    "models*",
-    "client*",
-    "baseline*",
-]
+[project.scripts]
+server = "code_review_env.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["code_review_env", "code_review_env.server"]
+package-dir = {"code_review_env" = ".", "code_review_env.server" = "server"}
+
+[tool.setuptools.package-data]
+code_review_env = ["**/*.yaml", "**/*.yml", "**/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+asyncio_mode = "strict"
