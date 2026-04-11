@@ -30,7 +30,7 @@ class TestCoreInterface:
         assert isinstance(obs, CodeReviewObservation)
         assert obs.done is False
         assert obs.tools_list is not None
-        assert len(obs.tools_list) == 5
+        assert len(obs.tools_list) == 8
 
     def test_list_tools_action(self):
         """ListToolsAction returns available tools."""
@@ -40,7 +40,7 @@ class TestCoreInterface:
         assert obs.success is True
         assert obs.tools_list is not None
         tool_names = {t["name"] for t in obs.tools_list}
-        assert tool_names == {"get_code", "analyze_code", "check_line", "get_hint", "submit_review"}
+        assert tool_names == {"get_code", "run_code", "run_tests", "analyze_code", "check_line", "get_hint", "submit_fix", "submit_review"}
 
     def test_tool_call_get_code(self):
         """ToolCallAction with get_code returns source code."""

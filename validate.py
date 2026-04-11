@@ -40,7 +40,7 @@ def validate():
             obs = env.reset(seed=42, difficulty=difficulty)
             results.append(check(
                 f"reset() returns tools_list ({difficulty})",
-                isinstance(obs, CodeReviewObservation) and obs.tools_list is not None and len(obs.tools_list) == 5,
+                isinstance(obs, CodeReviewObservation) and obs.tools_list is not None and len(obs.tools_list) == 8,
             ))
         except Exception as e:
             results.append(check(f"reset() ({difficulty})", False, str(e)))
@@ -53,7 +53,7 @@ def validate():
         tool_names = {t["name"] for t in obs.tools_list}
         results.append(check(
             "ListToolsAction returns 5 tools",
-            tool_names == {"get_code", "analyze_code", "check_line", "get_hint", "submit_review"},
+            tool_names == {"get_code", "run_code", "run_tests", "analyze_code", "check_line", "get_hint", "submit_fix", "submit_review"},
         ))
     except Exception as e:
         results.append(check("ListToolsAction", False, str(e)))

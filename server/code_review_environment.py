@@ -1,16 +1,20 @@
 """
-CodeReviewEnvironment — MCP tool-calling RL environment for code review.
+CodeReviewEnvironment — MCP tool-calling RL environment with REAL code execution.
 
-Follows the same pattern as calendar_env and repl_env from OpenEnv reference:
-  - Agents interact via ListToolsAction and ToolCallAction
-  - Environment exposes real tools (get_code, analyze_code, check_line, etc.)
-  - Tool results returned in MCPObservation
+Like repl_env: agents run real code, see real failures, and submit fixes
+that are verified by actual test execution. Not a keyword matcher.
 
-This is a real tool server, not a synthetic benchmark wrapper.
-The agent discovers tools, calls them, and builds up understanding
-of the code before submitting a final review.
+Tools:
+  get_code      — retrieve the buggy source code
+  run_code      — EXECUTE the code and see output/errors (real Python executor)
+  run_tests     — run test cases against the code (see which tests fail)
+  analyze_code  — structural analysis
+  check_line    — check if a line is near a bug (immediate feedback)
+  get_hint      — progressive hints (costs efficiency)
+  submit_fix    — submit fixed code; tests are re-run to verify the fix works
+  submit_review — submit text review (alternative to submit_fix)
 
-MDP: up to 10 tool calls per episode. Each tool call is one step.
+MDP: up to 10 tool calls per episode.
 """
 
 from typing import Any, Dict, List, Optional
@@ -22,42 +26,62 @@ from openenv.core.env_server.types import EnvironmentMetadata
 from models import CodeReviewAction, CodeReviewObservation, CodeReviewState
 from snippet_bank import generate_episode, BugRecord
 from reward import compute_reward
+from server.code_executor import execute_code, apply_fix_and_test, SNIPPET_TESTS
 
 MAX_STEPS = 10
 LINE_TOLERANCE = 3
 
-# Tool definitions — what agents discover via ListToolsAction
 TOOLS = [
     {
         "name": "get_code",
-        "description": "Get the buggy source code to review. Returns the code, language, and difficulty.",
+        "description": "Get the buggy source code to review. Returns code with line numbers, language, and difficulty.",
+        "parameters": {},
+    },
+    {
+        "name": "run_code",
+        "description": "Execute the current code and see stdout/stderr/errors. Like a real REPL — see what actually happens when you run it.",
+        "parameters": {
+            "code": {"type": "string", "description": "Python code to execute (optional — defaults to the buggy snippet)"},
+        },
+    },
+    {
+        "name": "run_tests",
+        "description": "Run test cases against the current buggy code. See which tests pass and which fail. The failures reveal the bugs.",
         "parameters": {},
     },
     {
         "name": "analyze_code",
-        "description": "Run structural analysis on the code. Returns line count, function count, complexity info.",
+        "description": "Structural analysis: line count, functions, conditionals, complexity hints.",
         "parameters": {},
     },
     {
         "name": "check_line",
-        "description": "Check if a specific line number contains a bug. Returns immediate feedback (+0.15 if near a bug, -0.05 if not).",
+        "description": "Check if a specific line is near a known bug. Immediate reward: +0.15 hit, -0.05 miss.",
         "parameters": {
             "line": {"type": "integer", "description": "Line number to check (1-indexed)"},
         },
     },
     {
         "name": "get_hint",
-        "description": "Get a progressive hint about the bugs. Each hint is more specific but costs -0.05 efficiency penalty.",
+        "description": "Get a progressive hint about the bugs. Costs -0.05 efficiency per hint.",
         "parameters": {},
     },
     {
-        "name": "submit_review",
-        "description": "Submit final code review. Ends the episode and computes the full 5-signal reward. Include all bugs found, flagged lines, suggested fix, and review comment.",
+        "name": "submit_fix",
+        "description": "Submit fixed Python code. The environment runs tests against your fix. If tests pass, you get high reward. This is the BEST way to end an episode.",
         "parameters": {
-            "issues": {"type": "array", "items": {"type": "string"}, "description": "List of bug descriptions found"},
-            "flagged_lines": {"type": "array", "items": {"type": "integer"}, "description": "Line numbers believed to contain bugs"},
-            "suggestion": {"type": "string", "description": "Suggested fix (code or description)"},
-            "comment": {"type": "string", "description": "Natural-language review comment"},
+            "fixed_code": {"type": "string", "description": "The corrected source code"},
+            "comment": {"type": "string", "description": "What you fixed and why"},
+        },
+    },
+    {
+        "name": "submit_review",
+        "description": "Submit a text-based code review (alternative to submit_fix). Lower reward ceiling than submit_fix.",
+        "parameters": {
+            "issues": {"type": "array", "items": {"type": "string"}, "description": "Bug descriptions found"},
+            "flagged_lines": {"type": "array", "items": {"type": "integer"}, "description": "Buggy line numbers"},
+            "suggestion": {"type": "string", "description": "Suggested fix description"},
+            "comment": {"type": "string", "description": "Review comment"},
         },
     },
 ]
@@ -236,9 +260,12 @@ class CodeReviewEnvironment(
 
         handlers = {
             "get_code": self._tool_get_code,
+            "run_code": self._tool_run_code,
+            "run_tests": self._tool_run_tests,
             "analyze_code": self._tool_analyze_code,
             "check_line": self._tool_check_line,
             "get_hint": self._tool_get_hint,
+            "submit_fix": self._tool_submit_fix,
             "submit_review": self._tool_submit_review,
         }
 
@@ -392,6 +419,146 @@ class CodeReviewEnvironment(
             metadata={"episode_id": self._episode_id, "step": self._step_count},
             done=False,
             reward=0.0,
+        )
+
+    def _tool_run_code(self, args: Dict) -> CodeReviewObservation:
+        """Tool: run_code — EXECUTE Python code and see real output/errors."""
+        if self._language != "python":
+            return CodeReviewObservation(
+                success=True,
+                tool_result={"error": f"Execution only supported for Python, got {self._language}",
+                             "language": self._language},
+                metadata={"episode_id": self._episode_id, "step": self._step_count},
+                done=False, reward=0.0,
+            )
+
+        code_to_run = args.get("code", self._buggy_code)
+        exec_result = execute_code(code_to_run)
+        self._record("run_code", 0.0)
+
+        return CodeReviewObservation(
+            success=True,
+            tool_result={
+                "executed": True,
+                "success": exec_result["success"],
+                "stdout": exec_result["stdout"],
+                "stderr": exec_result["stderr"],
+                "error": exec_result["error"],
+            },
+            metadata={"episode_id": self._episode_id, "step": self._step_count},
+            done=False, reward=0.0,
+        )
+
+    def _tool_run_tests(self, args: Dict) -> CodeReviewObservation:
+        """Tool: run_tests — run test cases against the buggy code. See real failures."""
+        if self._language != "python":
+            return CodeReviewObservation(
+                success=True,
+                tool_result={"error": f"Tests only available for Python, got {self._language}",
+                             "tests_available": False},
+                metadata={"episode_id": self._episode_id, "step": self._step_count},
+                done=False, reward=0.0,
+            )
+
+        test_code = SNIPPET_TESTS.get(self._snippet_name, "")
+        if not test_code:
+            return CodeReviewObservation(
+                success=True,
+                tool_result={"tests_available": False, "message": "No test cases for this snippet."},
+                metadata={"episode_id": self._episode_id, "step": self._step_count},
+                done=False, reward=0.0,
+            )
+
+        exec_result = execute_code(self._buggy_code, test_code)
+        self._record("run_tests", 0.0)
+
+        return CodeReviewObservation(
+            success=True,
+            tool_result={
+                "tests_available": True,
+                "code_executed": exec_result["success"],
+                "code_error": exec_result["error"],
+                "tests_passed": exec_result["tests_passed"],
+                "tests_failed": exec_result["tests_failed"],
+                "test_results": exec_result["test_results"],
+                "total_tests": exec_result["tests_passed"] + exec_result["tests_failed"],
+            },
+            metadata={"episode_id": self._episode_id, "step": self._step_count},
+            done=False, reward=0.0,
+        )
+
+    def _tool_submit_fix(self, args: Dict) -> CodeReviewObservation:
+        """Tool: submit_fix — submit corrected code, verified by test execution.
+
+        This is the highest-reward path: if the fix passes all tests,
+        the agent gets near-perfect score.
+        """
+        fixed_code = args.get("fixed_code", "")
+        comment = args.get("comment", "")
+
+        if not fixed_code:
+            return CodeReviewObservation(
+                success=False,
+                error_message="fixed_code is required",
+                metadata={"episode_id": self._episode_id, "step": self._step_count},
+                done=False, reward=0.0,
+            )
+
+        # Run tests against the fix
+        test_code = SNIPPET_TESTS.get(self._snippet_name, "")
+        if test_code and self._language == "python":
+            exec_result = apply_fix_and_test(self._buggy_code, fixed_code, test_code)
+            total_tests = exec_result["tests_passed"] + exec_result["tests_failed"]
+            fix_pass_rate = exec_result["tests_passed"] / total_tests if total_tests > 0 else 0.0
+        else:
+            exec_result = {"tests_passed": 0, "tests_failed": 0, "test_results": []}
+            fix_pass_rate = 0.0
+
+        # Compute reward: test-based (0.60) + review-based (0.40)
+        # Test pass rate is the primary signal — this is what makes us different
+        test_reward = fix_pass_rate * 0.60
+
+        # Also compute text-based reward for the comment
+        _, text_breakdown = compute_reward(
+            issues=[f"Fixed: {comment}"] if comment else [],
+            flagged_lines=self._flagged_lines,
+            suggestion=fixed_code[:200],
+            comment=comment,
+            gold_bugs=self._gold_bugs,
+            step_count=self._step_count,
+            hint_count=self._hint_count,
+            difficulty=self._difficulty,
+        )
+        text_reward = text_breakdown.get("weighted_total", 0.0) * 0.40
+
+        total_reward = min(1.0, test_reward + text_reward)
+
+        self._total_reward += total_reward
+        self._done = True
+        self._record("submit_fix", total_reward)
+
+        breakdown = {
+            "test_pass_rate": round(fix_pass_rate, 4),
+            "test_reward": round(test_reward, 4),
+            "text_reward": round(text_reward, 4),
+            "tests_passed": exec_result["tests_passed"],
+            "tests_failed": exec_result["tests_failed"],
+            "total_reward": round(total_reward, 4),
+        }
+
+        return CodeReviewObservation(
+            success=True,
+            tool_result={
+                "fix_accepted": fix_pass_rate > 0.5,
+                "test_results": exec_result["test_results"],
+                "tests_passed": exec_result["tests_passed"],
+                "tests_failed": exec_result["tests_failed"],
+                "reward": total_reward,
+                "breakdown": breakdown,
+            },
+            metadata={"episode_id": self._episode_id, "step": self._step_count, "breakdown": breakdown},
+            done=True,
+            reward=total_reward,
         )
 
     def _tool_submit_review(self, args: Dict) -> CodeReviewObservation:
