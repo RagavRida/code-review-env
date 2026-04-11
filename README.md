@@ -5,7 +5,7 @@ colorFrom: blue
 colorTo: indigo
 sdk: docker
 pinned: false
-short_description: "RL benchmark for automated code review with procedural generation"
+short_description: "RL benchmark for automated code review"
 tags:
   - openenv
   - reinforcement-learning
