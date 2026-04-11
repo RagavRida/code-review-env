@@ -1,15 +1,18 @@
 """
-CodeReviewEnvironment — OpenEnv-compliant RL environment for code review.
+CodeReviewEnvironment — OpenEnv-compliant multi-step RL environment for code review.
 
-Inherits from openenv.core.env_server.Environment and implements the
-standard reset() / step() / state API. Runs as a FastAPI server inside
-Docker; agents interact via HTTP/WebSocket through a typed client.
+Multi-step MDP design:
+  reset()  →  observe buggy code (done=False)
+  step(analyze)       →  get structural analysis of the code (free, done=False)
+  step(flag_line)     →  flag a line as buggy; immediate reward if correct (done=False)
+  step(request_hint)  →  get a progressive hint; costs -0.05 efficiency (done=False)
+  step(submit_review) →  full 5-signal grading; incorporates all prior flags (done=True)
 
-This is a Semantic Markov Decision Process (S-MDP) where:
-  - States are PR diffs + review context (text)
-  - Actions are review decisions (labels, orderings, comments)
-  - Transitions are deterministic (next PR in queue)
-  - Rewards are computed by deterministic graders
+Episode ends on submit_review OR after max_steps (5).
+If agent hits max_steps without submitting, a forced grading uses accumulated flags.
+
+Procedural generation: every seed produces a unique episode via
+snippet bank + AST/regex bug injectors.
 """
 
 from typing import Any, Dict, List, Optional
@@ -19,76 +22,73 @@ from openenv.core.env_server import Environment
 from openenv.core.env_server.types import EnvironmentMetadata
 
 from models import CodeReviewAction, CodeReviewObservation, CodeReviewState
-from env.data_generator import DataGenerator, PR_TEMPLATES, get_ground_truth, _build_observation
-from graders.grader_easy import EasyGrader
-from graders.grader_medium import MediumGrader
-from graders.grader_hard import HardGrader
-from tasks.task_easy import EasyTask
-from tasks.task_medium import MediumTask
-from tasks.task_hard import HardTask
+from snippet_bank import generate_episode, BugRecord
+from reward import compute_reward, _line_f1
+
+MAX_STEPS = 5
+LINE_TOLERANCE = 3
 
 
 class CodeReviewEnvironment(
     Environment[CodeReviewAction, CodeReviewObservation, CodeReviewState]
 ):
-    """OpenEnv-compliant code review RL environment.
+    """OpenEnv-compliant multi-step code review RL environment.
 
-    Three difficulty levels — easy (severity labeling), medium (queue
-    prioritization), hard (feedback generation) — each with deterministic
-    graders and exploit-prevention penalties.
+    Agents can take up to 5 actions per episode:
+      analyze        — free structural analysis
+      flag_line      — intermediate line-flagging with immediate reward
+      request_hint   — progressive hints with efficiency cost
+      submit_review  — final grading across 5 signals
 
-    Usage via OpenEnv client:
-        async with CodeReviewEnv(base_url="http://localhost:8000") as env:
-            result = await env.reset(seed=42)
-            result = await env.step(CodeReviewAction(action_type="label_severity", severity="high"))
+    This is a genuine multi-step MDP where earlier decisions (which lines
+    to flag, whether to request hints) affect the final reward.
     """
 
     SUPPORTS_CONCURRENT_SESSIONS = True
 
-    def __init__(self, task: str = "easy", seed: int = 42):
+    def __init__(self, **kwargs: Any):
         super().__init__()
-        self.task_name = task
-        self.seed = seed
+        self._episode_id = ""
+        self._step_count = 0
+        self._total_reward = 0.0
+        self._difficulty = "easy"
+        self._hint_count = 0
+        self._trajectory: List[Dict[str, Any]] = []
+        self._flagged_lines: List[int] = []
+        self._analysis_text: Optional[str] = None
+        self._last_hint: Optional[str] = None
+
+        # Gold state (hidden from agent)
+        self._original_code = ""
+        self._buggy_code = ""
+        self._gold_bugs: List[BugRecord] = []
+        self._language = "python"
+        self._snippet_name = ""
+        self._done = False
+
+        # Auto-reset
+        self._auto_reset(seed=42, difficulty="easy")
+
+    def _auto_reset(self, seed: int, difficulty: str) -> None:
         self._episode_id = str(uuid4())
         self._step_count = 0
         self._total_reward = 0.0
-        self._trajectory: List[Dict[str, Any]] = []
-        self._reviewed_prs: List[str] = []
-        self._current_obs: Optional[CodeReviewObservation] = None
-
-        # Initialize task + grader and auto-reset to valid state
-        self._init_task(task, seed)
-        self._auto_reset(task, seed)
-
-    def _init_task(self, task: str, seed: int) -> None:
-        """Initialize the task and grader for the given difficulty."""
-        if task == "easy":
-            self.task = EasyTask(seed=seed)
-            self.grader = EasyGrader()
-        elif task == "medium":
-            self.task = MediumTask(seed=seed)
-            self.grader = MediumGrader()
-        elif task == "hard":
-            self.task = HardTask(seed=seed)
-            self.grader = HardGrader()
-        else:
-            raise ValueError(f"Unknown task: {task}. Must be easy|medium|hard")
-
-    def _auto_reset(self, task: str, seed: int) -> None:
-        """Auto-reset to ensure environment starts in a valid state.
-
-        Called from __init__ so that even without an explicit reset(),
-        the environment has episode data loaded for step().
-        """
-        self._step_count = 0
-        self._total_reward = 0.0
+        self._difficulty = difficulty
+        self._hint_count = 0
         self._trajectory = []
-        self._reviewed_prs = []
-        self.grader.reset()
-        internal_obs = self.task.reset()
-        self._current_obs = self._convert_observation(internal_obs, done=False, reward=None)
+        self._flagged_lines = []
+        self._analysis_text = None
+        self._last_hint = None
+        self._done = False
 
-    # ─── OpenEnv API ─────────────────────────────────────────────────────
+        snippet, buggy_code, gold_bugs = generate_episode(seed=seed, difficulty=difficulty)
+        self._original_code = snippet.code
+        self._buggy_code = buggy_code
+        self._gold_bugs = gold_bugs
+        self._language = snippet.language
+        self._snippet_name = snippet.name
+
+    # ─── OpenEnv API ─────────────────────────────────────────────────
 
     def reset(
         self,
@@ -96,35 +96,31 @@ class CodeReviewEnvironment(
         episode_id: Optional[str] = None,
         **kwargs: Any,
     ) -> CodeReviewObservation:
-        """Reset the environment and return the initial observation.
+        """Reset and return initial observation with buggy code."""
+        actual_seed = seed if seed is not None else 42
+        difficulty = kwargs.get("difficulty") or kwargs.get("task", self._difficulty)
+        if difficulty not in ("easy", "medium", "hard"):
+            difficulty = "easy"
 
-        Args:
-            seed: Random seed for reproducible episodes
-            episode_id: Custom episode identifier
-            **kwargs: May include 'task' to change difficulty
-
-        Returns:
-            CodeReviewObservation with the first PR to review
-        """
-        # Allow changing task on reset
-        task = kwargs.get("task", self.task_name)
-        actual_seed = seed if seed is not None else self.seed
-
-        self.task_name = task
-        self.seed = actual_seed
+        self._difficulty = difficulty
         self._episode_id = episode_id or str(uuid4())
         self._step_count = 0
         self._total_reward = 0.0
+        self._hint_count = 0
         self._trajectory = []
-        self._reviewed_prs = []
+        self._flagged_lines = []
+        self._analysis_text = None
+        self._last_hint = None
+        self._done = False
 
-        self._init_task(task, actual_seed)
-        self.grader.reset()
+        snippet, buggy_code, gold_bugs = generate_episode(seed=actual_seed, difficulty=difficulty)
+        self._original_code = snippet.code
+        self._buggy_code = buggy_code
+        self._gold_bugs = gold_bugs
+        self._language = snippet.language
+        self._snippet_name = snippet.name
 
-        # Get initial observation from task
-        internal_obs = self.task.reset()
-        self._current_obs = self._convert_observation(internal_obs, done=False, reward=None)
-        return self._current_obs
+        return self._build_observation(reward=0.0, done=False)
 
     def step(
         self,
@@ -132,254 +128,293 @@ class CodeReviewEnvironment(
         timeout_s: Optional[float] = None,
         **kwargs: Any,
     ) -> CodeReviewObservation:
-        """Execute one step in the environment.
+        """Execute one step. Supports 4 action types for multi-step review."""
+        if self._done:
+            return self._build_observation(reward=0.0, done=True)
 
-        Args:
-            action: CodeReviewAction with the agent's decision
-            timeout_s: Optional timeout (unused)
-
-        Returns:
-            CodeReviewObservation with next PR, reward, and done flag
-        """
-        from env.models import Action as InternalAction
-
-        # Convert OpenEnv action to internal action
-        internal_action = InternalAction(
-            action_type=action.action_type,
-            severity=action.severity,
-            priority_order=action.priority_order,
-            comment=action.comment,
-            target_file=action.target_file,
-            target_line=action.target_line,
-        )
-
-        # Grade the action
-        reward_value, reward_breakdown, info, done = self._grade_action(
-            internal_action, self._step_count
-        )
-
-        # Record trajectory
-        prev_obs = self._current_obs
-        self._trajectory.append({
-            "step": self._step_count,
-            "observation": prev_obs.model_dump() if prev_obs else {},
-            "action": action.model_dump(),
-            "reward": reward_value,
-            "info": info,
-        })
-
-        self._total_reward += reward_value
         self._step_count += 1
+        action_type = getattr(action, 'action_type', 'submit_review') or 'submit_review'
 
-        # Determine done: for hard task, delegate to task's is_done()
-        if self.task_name == "hard":
-            done = done or self.task.is_done()
+        if action_type == "analyze":
+            return self._handle_analyze(action)
+        elif action_type == "flag_line":
+            return self._handle_flag_line(action)
+        elif action_type == "request_hint":
+            return self._handle_request_hint(action)
+        elif action_type == "submit_review":
+            return self._handle_submit_review(action)
         else:
-            done = done or self._step_count >= self._get_episode_length()
-
-        # Get next observation
-        if not done:
-            next_internal_obs = self.task.get_observation(self._step_count)
-            self._current_obs = self._convert_observation(
-                next_internal_obs,
-                done=False,
-                reward=reward_value,
-                reward_breakdown=reward_breakdown,
-                info=info,
-            )
-        else:
-            done = True
-            # Return final observation with done=True
-            try:
-                final_obs = self.task.get_observation(self._step_count)
-            except Exception:
-                final_obs = self.task.get_observation(
-                    max(0, self._step_count - 1)
-                )
-            self._current_obs = self._convert_observation(
-                final_obs,
-                done=True,
-                reward=reward_value,
-                reward_breakdown=reward_breakdown,
-                info=info,
-            )
-
-        # Track reviewed PRs
-        if hasattr(self.task, 'get_current_pr_id'):
-            try:
-                pr_id = self.task.get_current_pr_id(
-                    self._step_count - 1 if self.task_name != "hard" else None
-                )
-            except TypeError:
-                pr_id = self.task.get_current_pr_id()
-            if pr_id not in self._reviewed_prs:
-                self._reviewed_prs.append(pr_id)
-
-        return self._current_obs
+            # Unknown action type — treat as submit_review
+            return self._handle_submit_review(action)
 
     @property
     def state(self) -> CodeReviewState:
-        """Get the current environment state."""
+        """Full environment state — includes gold answers for debugging."""
         return CodeReviewState(
             episode_id=self._episode_id,
             step_count=self._step_count,
-            task=self.task_name,
-            seed=self.seed,
-            reviewed_prs=list(self._reviewed_prs),
-            pending_prs=[],
-            total_reward=self._total_reward,
-            trajectory=list(self._trajectory),
+            original_code=self._original_code,
+            buggy_code=self._buggy_code,
+            gold_bugs=[
+                {"description": b.description, "lines": b.lines, "fix": b.fix, "bug_type": b.bug_type}
+                for b in self._gold_bugs
+            ],
+            language=self._language,
+            difficulty=self._difficulty,
+            hint_count=self._hint_count,
+            snippet_name=self._snippet_name,
         )
 
     def get_metadata(self) -> EnvironmentMetadata:
-        """Return environment metadata for the OpenEnv framework."""
         return EnvironmentMetadata(
             name="CodeReviewEnv",
             description=(
-                "A Semantic MDP environment for code review. "
-                "Agents review pull requests across three difficulty levels: "
-                "severity labeling (easy), queue prioritization (medium), "
-                "and feedback generation (hard)."
+                "Multi-step Semantic MDP for code review. "
+                "Agents analyze code, flag buggy lines, request hints, "
+                "and submit structured reviews. 5-signal shaped reward."
             ),
-            version="1.0.0",
+            version="2.0.0",
             author="CodeReviewEnv Team",
         )
 
-    # ─── Internal helpers ────────────────────────────────────────────────
+    # ─── Action Handlers ─────────────────────────────────────────────
 
-    def _get_episode_length(self) -> int:
-        """Get the episode length for the current task."""
-        if self.task_name == "easy":
-            return 5
-        elif self.task_name == "medium":
-            return 3
-        elif self.task_name == "hard":
-            return 18  # Max steps (3 PRs × 6 actions max: 5 comments + 1 decision)
-        return 5
+    def _handle_analyze(self, action: CodeReviewAction) -> CodeReviewObservation:
+        """Analyze action: provide structural analysis of the code (free)."""
+        lines = self._buggy_code.split('\n')
+        n_lines = len(lines)
+        n_functions = sum(1 for l in lines if l.strip().startswith(('def ', 'func ', 'function ')))
+        n_conditionals = sum(1 for l in lines if any(kw in l for kw in ('if ', 'elif ', 'else:', 'while ', 'for ')))
 
-    def _grade_action(self, action, step: int):
-        """Grade an action using the appropriate grader."""
-        if self.task_name == "easy":
-            return self._grade_easy(action, step)
-        elif self.task_name == "medium":
-            return self._grade_medium(action, step)
-        elif self.task_name == "hard":
-            return self._grade_hard(action, step)
-        return 0.0, {}, {}, True
+        self._analysis_text = (
+            f"Code has {n_lines} lines, {n_functions} function(s), "
+            f"{n_conditionals} conditional/loop statement(s). "
+            f"Language: {self._language}. "
+            f"Look for boundary conditions, null checks, operator usage, and boolean logic."
+        )
 
-    def _grade_easy(self, action, step: int):
-        """Grade severity labeling action."""
-        pr_id = self.task.get_current_pr_id(step)
-        reward_obj, info = self.grader.grade(action, pr_id)
-        info["ground_truth"] = self.task.get_ground_truth(step)
-        done = (step + 1) >= self.task.EPISODE_LENGTH
-        return reward_obj.value, reward_obj.breakdown, info, done
+        reward = 0.0  # Free action — no reward or penalty
+        self._record_transition("analyze", reward, {})
 
-    def _grade_medium(self, action, step: int):
-        """Grade queue prioritization action."""
-        queue_templates = self.task.get_queue_templates(step)
-        gt_order = self.task.get_ground_truth_order(step)
-        reward_obj, info = self.grader.grade(action, queue_templates, gt_order)
-        done = (step + 1) >= self.task.EPISODE_LENGTH
-        return reward_obj.value, reward_obj.breakdown, info, done
+        if self._step_count >= MAX_STEPS:
+            return self._force_submit()
 
-    def _grade_hard(self, action, step: int):
-        """Grade feedback generation action.
+        return self._build_observation(reward=reward, done=False)
 
-        Hard task has per-PR multi-step grading:
-        - add_comment: accumulates comments, returns decaying ack reward
-        - approve/request_changes: triggers full PR grading via grade_pr()
+    def _handle_flag_line(self, action: CodeReviewAction) -> CodeReviewObservation:
+        """Flag a line as buggy. Immediate reward if within tolerance of a gold bug line."""
+        line = action.line
+        if line is None:
+            # Try flagged_lines as fallback
+            if action.flagged_lines:
+                line = action.flagged_lines[0]
+            else:
+                line = 0
 
-        Anti-exploit: consecutive comments get decaying reward (0.05 → 0.03 → 0.01)
-        to prevent the spam-then-decide loop.
-        """
-        pr_id = self.task.get_current_pr_id()
+        reward = 0.0
+        breakdown = {}
 
-        if action.action_type == "add_comment":
-            # Accumulate comment for later scoring
-            self.grader.add_comment(pr_id, action)
-            self.grader.consecutive_comments += 1
+        if line > 0 and line not in self._flagged_lines:
+            self._flagged_lines.append(line)
 
-            # Process action — updates task state (comment count increments)
-            self.task.process_action(action.action_type)
+            # Check if this line is near any gold bug
+            hit = False
+            for bug in self._gold_bugs:
+                for bl in bug.lines:
+                    if abs(line - bl) <= LINE_TOLERANCE:
+                        hit = True
+                        break
+                if hit:
+                    break
 
-            # Decaying ack reward: penalize consecutive comments without decision
-            base_ack = 0.05
-            spam_penalty = 0.02 * max(0, self.grader.consecutive_comments - 1)
-            ack_reward = max(0.01, base_ack - spam_penalty)
-
-            info = {
-                "comment_added": True,
-                "pr_id": pr_id,
-                "comments_so_far": self.task.comments_on_current_pr,
-                "consecutive_comments": self.grader.consecutive_comments,
-            }
-            done = self.task.is_done()
-
-            # IMPORTANT: Rebuild observation so comment count updates in state
-            # (fixes frozen observation bug — Problem 3)
-            if not done:
-                next_obs = self.task.get_observation(self._step_count)
-                self._current_obs = self._convert_observation(
-                    next_obs, done=False, reward=ack_reward,
-                    reward_breakdown={"comment_ack": ack_reward},
-                    info=info,
-                )
-
-            return ack_reward, {"comment_ack": ack_reward}, info, done
-
-        elif action.action_type in ("approve", "request_changes"):
-            # Reset consecutive comment counter on decision
-            self.grader.consecutive_comments = 0
-
-            # Score all accumulated comments + decision
-            reward_obj, info = self.grader.grade_pr(pr_id, action.action_type)
-            # Advance to next PR
-            self.task.process_action(action.action_type)
-            done = self.task.is_done()
-            return reward_obj.value, reward_obj.breakdown, info, done
-
+            if hit:
+                reward = 0.15  # Immediate positive signal for correct flag
+                breakdown["line_flag_hit"] = 0.15
+            else:
+                reward = -0.05  # Small penalty for false flag
+                breakdown["line_flag_miss"] = -0.05
         else:
-            # Invalid action for hard task — penalize
-            info = {"error": f"Invalid action type: {action.action_type}"}
-            return 0.01, {"invalid_action": -0.01}, info, False
+            reward = 0.0
+            breakdown["duplicate_or_invalid"] = 0.0
 
-    def _convert_observation(
+        self._total_reward += reward
+        self._record_transition("flag_line", reward, breakdown)
+
+        if self._step_count >= MAX_STEPS:
+            return self._force_submit()
+
+        return self._build_observation(reward=reward, done=False, breakdown=breakdown)
+
+    def _handle_request_hint(self, action: CodeReviewAction) -> CodeReviewObservation:
+        """Request a hint. Costs efficiency penalty but helps find bugs."""
+        self._hint_count += 1
+
+        if not self._gold_bugs:
+            hint = "The code looks clean — no obvious bugs."
+        else:
+            bug_idx = min(self._hint_count - 1, len(self._gold_bugs) - 1)
+            bug = self._gold_bugs[bug_idx]
+
+            if self._hint_count == 1:
+                hint = f"Look for a {bug.bug_type.replace('_', ' ')} bug in the code."
+            elif self._hint_count == 2:
+                hint = f"There's a {bug.bug_type.replace('_', ' ')} near line {bug.lines[0]}."
+            else:
+                hint = f"Bug on line {bug.lines[0]}: {bug.description}"
+
+        self._last_hint = hint
+
+        reward = 0.0  # No immediate reward, but costs efficiency at final grading
+        self._record_transition("request_hint", reward, {"hint_count": self._hint_count})
+
+        if self._step_count >= MAX_STEPS:
+            return self._force_submit()
+
+        return self._build_observation(reward=reward, done=False)
+
+    def _handle_submit_review(self, action: CodeReviewAction) -> CodeReviewObservation:
+        """Submit final review. Full 5-signal grading. Ends episode."""
+        # Merge any previously flagged lines into the submission
+        all_flagged = list(set(self._flagged_lines + (action.flagged_lines or [])))
+
+        total_reward, breakdown = compute_reward(
+            issues=action.issues or [],
+            flagged_lines=all_flagged,
+            suggestion=action.suggestion or "",
+            comment=action.comment or "",
+            gold_bugs=self._gold_bugs,
+            step_count=self._step_count,
+            hint_count=self._hint_count,
+            difficulty=self._difficulty,
+        )
+
+        self._total_reward += total_reward
+        self._done = True
+
+        self._record_transition("submit_review", total_reward, breakdown)
+
+        return self._build_observation(reward=total_reward, done=True, breakdown=breakdown)
+
+    def _force_submit(self) -> CodeReviewObservation:
+        """Auto-submit when max steps reached. Uses accumulated flags."""
+        total_reward, breakdown = compute_reward(
+            issues=[],
+            flagged_lines=self._flagged_lines,
+            suggestion="",
+            comment="",
+            gold_bugs=self._gold_bugs,
+            step_count=self._step_count,
+            hint_count=self._hint_count,
+            difficulty=self._difficulty,
+        )
+
+        self._total_reward += total_reward
+        self._done = True
+
+        self._record_transition("forced_submit", total_reward, breakdown)
+
+        return self._build_observation(reward=total_reward, done=True, breakdown=breakdown)
+
+    # ─── MCP Tool Methods ────────────────────────────────────────────
+
+    def get_code_snippet(self) -> Dict[str, Any]:
+        return {
+            "code": self._buggy_code,
+            "language": self._language,
+            "difficulty": self._difficulty,
+            "snippet_name": self._snippet_name,
+            "step_count": self._step_count,
+            "done": self._done,
+        }
+
+    def request_hint(self) -> Dict[str, Any]:
+        self._hint_count += 1
+        if not self._gold_bugs:
+            return {"hint": "No bugs found.", "hint_count": self._hint_count, "penalty": 0.05}
+        bug = self._gold_bugs[min(self._hint_count - 1, len(self._gold_bugs) - 1)]
+        if self._hint_count == 1:
+            hint = f"Look for a {bug.bug_type.replace('_', ' ')} bug."
+        elif self._hint_count == 2:
+            hint = f"Bug near line {bug.lines[0]}."
+        else:
+            hint = f"Line {bug.lines[0]}: {bug.description}"
+        return {"hint": hint, "hint_count": self._hint_count, "penalty": 0.05 * self._hint_count}
+
+    def get_state_summary(self) -> Dict[str, Any]:
+        return {
+            "episode_id": self._episode_id,
+            "step_count": self._step_count,
+            "max_steps": MAX_STEPS,
+            "difficulty": self._difficulty,
+            "language": self._language,
+            "hint_count": self._hint_count,
+            "flagged_lines": self._flagged_lines,
+            "done": self._done,
+            "total_reward": self._total_reward,
+        }
+
+    # ─── Internal helpers ────────────────────────────────────────────
+
+    def _build_observation(
         self,
-        internal_obs,
+        reward: float,
         done: bool,
-        reward: Optional[float] = None,
-        reward_breakdown: Optional[Dict] = None,
-        info: Optional[Dict] = None,
+        breakdown: Optional[Dict[str, float]] = None,
     ) -> CodeReviewObservation:
-        """Convert an internal Observation to a CodeReviewObservation."""
         return CodeReviewObservation(
             done=done,
             reward=reward,
             metadata={
-                "task": self.task_name,
                 "episode_id": self._episode_id,
                 "step": self._step_count,
+                "difficulty": self._difficulty,
+                "language": self._language,
             },
-            pr_id=internal_obs.pr_id,
-            title=internal_obs.title,
-            description=internal_obs.description,
-            author_experience=internal_obs.author_experience,
-            files=[f.model_dump() if hasattr(f, 'model_dump') else f for f in internal_obs.files],
-            existing_comments=internal_obs.existing_comments,
-            review_queue=internal_obs.review_queue,
-            step_number=internal_obs.step_number,
-            episode_budget=internal_obs.episode_budget,
-            reward_breakdown=reward_breakdown,
-            info=info,
+            code=self._buggy_code,
+            language=self._language,
+            difficulty=self._difficulty,
+            instructions=(
+                "Review the code. You can:\n"
+                "  analyze       — get structural analysis (free)\n"
+                "  flag_line     — flag a line number as buggy (immediate feedback)\n"
+                "  request_hint  — get a hint (costs efficiency)\n"
+                "  submit_review — submit final review (ends episode)\n"
+                f"Step {self._step_count}/{MAX_STEPS} | "
+                f"Language: {self._language} | Difficulty: {self._difficulty}"
+            ),
+            step_number=self._step_count,
+            episode_budget=MAX_STEPS - self._step_count,
+            hint=self._last_hint,
+            flagged_so_far=list(self._flagged_lines),
+            analysis=self._analysis_text,
+            reward_breakdown=breakdown,
         )
 
-    # ─── Compatibility methods ───────────────────────────────────────────
-
-    def get_system_prompt(self) -> str:
-        """Get the system prompt for LLM agents."""
-        return self.task.get_system_prompt()
+    def _record_transition(self, action_type: str, reward: float, breakdown: Dict) -> None:
+        self._trajectory.append({
+            "step": self._step_count,
+            "action_type": action_type,
+            "reward": reward,
+            "breakdown": breakdown,
+            "flagged_lines": list(self._flagged_lines),
+            "hint_count": self._hint_count,
+        })
 
     def export_trajectory(self) -> List[Dict]:
-        """Export full trajectory for MBRL research."""
         return list(self._trajectory)
+
+    def get_system_prompt(self) -> str:
+        return (
+            "You are a senior software engineer performing code review.\n"
+            "You will receive a code snippet that may contain bugs.\n\n"
+            "You have up to 5 actions per episode:\n"
+            "  analyze       — get structural analysis of the code\n"
+            "  flag_line     — flag a specific line as buggy (immediate feedback)\n"
+            "  request_hint  — get a hint about a bug (costs efficiency)\n"
+            "  submit_review — submit your final review\n\n"
+            "For flag_line:\n"
+            '  {"action_type": "flag_line", "line": 7}\n\n'
+            "For submit_review:\n"
+            '  {"action_type": "submit_review", "issues": [...], '
+            '"flagged_lines": [...], "suggestion": "...", "comment": "..."}\n'
+        )

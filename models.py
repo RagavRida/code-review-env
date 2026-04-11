@@ -1,11 +1,13 @@
 """
 CodeReviewEnv — OpenEnv-compliant typed models.
 
-All models inherit from openenv.core.env_server base types
-to ensure full compatibility with the OpenEnv framework.
+Multi-step action space for code review:
+  - analyze:       inspect the code, get initial analysis (free action)
+  - flag_line:     flag a specific line as buggy (intermediate reward)
+  - request_hint:  get a hint about a bug (-0.05 penalty per hint)
+  - submit_review: submit final structured review (full grading, ends episode)
 
-Action, Observation, State are Pydantic BaseModel subclasses
-with automatic serialization and validation.
+Observations expose buggy code; gold answers stay hidden in State.
 """
 
 from typing import Any, Dict, List, Optional
@@ -19,32 +21,42 @@ from openenv.core.env_server.types import Action, Observation, State
 
 
 class CodeReviewAction(Action):
-    """Action space for all three CodeReviewEnv tasks.
+    """Multi-step action space for code review.
 
-    Easy:   action_type="label_severity", severity="critical"|"high"|"medium"|"low"|"none"
-    Medium: action_type="prioritize", priority_order=["PR-001", "PR-002", ...]
-    Hard:   action_type="add_comment"|"approve"|"request_changes"
+    Action types:
+      analyze       — request deeper analysis of the code (step_reward = 0)
+      flag_line     — flag a specific line as buggy (intermediate reward if correct)
+      request_hint  — get a hint (-0.05 efficiency penalty)
+      submit_review — submit final review (full 5-signal grading, ends episode)
     """
 
     model_config = ConfigDict(extra="forbid")
 
     action_type: str = Field(
-        ..., description="One of: label_severity, prioritize, add_comment, approve, request_changes"
+        default="submit_review",
+        description="One of: analyze, flag_line, request_hint, submit_review",
     )
-    severity: Optional[str] = Field(
-        default=None, description="Severity label for easy task"
+    # Fields for flag_line
+    line: Optional[int] = Field(
+        default=None,
+        description="Line number to flag (for flag_line action)",
     )
-    priority_order: Optional[List[str]] = Field(
-        default=None, description="Ordered list of PR IDs for medium task"
+    # Fields for submit_review
+    issues: List[str] = Field(
+        default_factory=list,
+        description="Descriptions of bugs found in the code",
     )
-    comment: Optional[str] = Field(
-        default=None, description="Review comment text for hard task"
+    flagged_lines: List[int] = Field(
+        default_factory=list,
+        description="Line numbers the agent believes contain bugs",
     )
-    target_file: Optional[str] = Field(
-        default=None, description="File path the comment targets"
+    suggestion: str = Field(
+        default="",
+        description="Suggested fix — code patch or description",
     )
-    target_line: Optional[int] = Field(
-        default=None, description="Line number the comment targets"
+    comment: str = Field(
+        default="",
+        description="Natural-language review comment",
     )
 
 
@@ -55,31 +67,36 @@ class CodeReviewObservation(Observation):
     """Observation returned after reset() and step().
 
     Inherits done, reward, metadata from openenv Observation.
-    Adds code-review-specific fields.
+    Adds the buggy code and episode context.
+    Gold answers are NEVER exposed here — they live in State only.
     """
 
     model_config = ConfigDict(extra="allow")
 
-    pr_id: str = Field(default="", description="Pull request identifier")
-    title: str = Field(default="", description="PR title")
-    description: str = Field(default="", description="PR description")
-    author_experience: str = Field(default="", description="junior|mid|senior")
-    files: List[Dict[str, Any]] = Field(
-        default_factory=list, description="List of changed files with diffs"
-    )
-    existing_comments: List[str] = Field(
-        default_factory=list, description="Previous review comments"
-    )
-    review_queue: List[str] = Field(
-        default_factory=list, description="Queue of PR IDs (medium task)"
+    code: str = Field(default="", description="Buggy source code to review")
+    language: str = Field(default="python", description="Programming language")
+    difficulty: str = Field(default="easy", description="easy | medium | hard")
+    instructions: str = Field(
+        default="Review the code. Report bugs, flagged lines, and a suggested fix.",
+        description="Task instructions for the agent",
     )
     step_number: int = Field(default=0, description="Current step in episode")
-    episode_budget: int = Field(default=5, description="Steps remaining")
-    reward_breakdown: Optional[Dict[str, float]] = Field(
-        default=None, description="Detailed reward component breakdown"
+    episode_budget: int = Field(default=5, description="Max steps in this episode")
+    hint: Optional[str] = Field(
+        default=None,
+        description="Hint text (if agent requested one)",
     )
-    info: Optional[Dict[str, Any]] = Field(
-        default=None, description="Grader info and ground truth"
+    flagged_so_far: List[int] = Field(
+        default_factory=list,
+        description="Lines flagged in previous steps (for multi-step tracking)",
+    )
+    analysis: Optional[str] = Field(
+        default=None,
+        description="Analysis text from analyze action",
+    )
+    reward_breakdown: Optional[Dict[str, float]] = Field(
+        default=None,
+        description="Per-signal reward breakdown for analysis",
     )
 
 
@@ -87,21 +104,20 @@ class CodeReviewObservation(Observation):
 
 
 class CodeReviewState(State):
-    """Extended state for CodeReviewEnv.
+    """Full environment state — includes gold answers (hidden from agent).
 
-    Inherits episode_id, step_count from openenv State.
-    Adds task tracking and trajectory history.
+    The gold_bugs list contains the injected bugs with their descriptions,
+    affected lines, fixes, and types. This is used for grading and is
+    NEVER sent to the agent in observations.
     """
 
-    task: str = Field(default="easy", description="Current task difficulty")
-    seed: int = Field(default=42, description="Random seed for reproducibility")
-    reviewed_prs: List[str] = Field(
-        default_factory=list, description="PRs already reviewed"
+    original_code: str = Field(default="", description="Clean code before injection")
+    buggy_code: str = Field(default="", description="Code with injected bugs")
+    gold_bugs: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Injected bugs: [{description, lines, fix, bug_type}, ...]",
     )
-    pending_prs: List[str] = Field(
-        default_factory=list, description="PRs remaining in episode"
-    )
-    total_reward: float = Field(default=0.0, description="Cumulative episode reward")
-    trajectory: List[Dict[str, Any]] = Field(
-        default_factory=list, description="Full (s,a,r,s') trajectory"
-    )
+    language: str = Field(default="python", description="Source language")
+    difficulty: str = Field(default="easy", description="Difficulty tier")
+    hint_count: int = Field(default=0, description="Hints requested (costs reward)")
+    snippet_name: str = Field(default="", description="Which snippet was used")

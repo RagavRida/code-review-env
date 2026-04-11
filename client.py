@@ -5,13 +5,17 @@ Usage:
     # Async (recommended)
     async with CodeReviewEnv(base_url="https://your-space.hf.space") as env:
         result = await env.reset(seed=42)
-        result = await env.step(CodeReviewAction(action_type="label_severity", severity="high"))
-        print(result.observation.pr_id, result.reward, result.done)
+        result = await env.step(CodeReviewAction(
+            issues=["Off-by-one error in loop"],
+            flagged_lines=[3],
+            suggestion="Change < to <=",
+            comment="Loop boundary is wrong."
+        ))
+        print(result.observation.code, result.reward, result.done)
 
     # Sync
-    with CodeReviewEnv(base_url="http://localhost:8000").sync() as env:
+    with CodeReviewEnv(base_url="http://localhost:7860").sync() as env:
         result = env.reset(seed=42)
-        result = env.step(CodeReviewAction(action_type="label_severity", severity="high"))
 """
 
 from typing import Any, Dict
@@ -39,7 +43,6 @@ class CodeReviewEnv(EnvClient[CodeReviewAction, CodeReviewObservation, CodeRevie
         """Parse the server's JSON response into a typed StepResult."""
         obs_data = payload.get("observation", payload.get("data", payload))
         observation = CodeReviewObservation(**obs_data)
-        # reward and done live at the top level of the payload, not inside observation
         reward = payload.get("reward", getattr(observation, "reward", 0.0))
         done = payload.get("done", getattr(observation, "done", False))
         return StepResult(
